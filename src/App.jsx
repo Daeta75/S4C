@@ -4,9 +4,74 @@ import './App.css'
 const DAEJEON_CENTER = { lat: 36.3504, lng: 127.3845 }
 const DEFAULT_ROWS = 500
 const MAX_LOCATION_LOOKUPS = 120
+const ACCIDENT_YEAR_LOOKBACK = 5
+const ACCIDENT_ZONE_RADIUS_METERS = 186
 const LATEST_ACCIDENT_YEAR = String(new Date().getFullYear() - 1)
 const DAEJEON_REGION_NAME = '대전광역시'
 const DAEJEON_GU_GUN_CODES = ['110', '140', '170', '200', '230']
+const CATEGORY_OPTIONS = [
+  {
+    id: 'safety',
+    label: '아동 안전',
+    datasetIds: ['15058311', '15058925', '15110685', '15110672', '15110706'],
+  },
+  {
+    id: 'activity',
+    label: '아동 활동',
+    datasetIds: ['15007270', '15124527', '15124524', '15124521', '15124519'],
+  },
+]
+const CLUSTER_STEPS = [10, 50, 100]
+const CLUSTER_STYLES = [
+  {
+    width: '42px',
+    height: '42px',
+    borderRadius: '50%',
+    background: 'rgba(47, 95, 232, 0.88)',
+    border: '3px solid rgba(255, 255, 255, 0.92)',
+    color: '#ffffff',
+    textAlign: 'center',
+    lineHeight: '36px',
+    fontWeight: '800',
+    boxShadow: '0 10px 24px rgba(22, 43, 88, 0.28)',
+  },
+  {
+    width: '50px',
+    height: '50px',
+    borderRadius: '50%',
+    background: 'rgba(35, 150, 90, 0.9)',
+    border: '3px solid rgba(255, 255, 255, 0.92)',
+    color: '#ffffff',
+    textAlign: 'center',
+    lineHeight: '44px',
+    fontWeight: '800',
+    boxShadow: '0 12px 28px rgba(20, 84, 56, 0.3)',
+  },
+  {
+    width: '58px',
+    height: '58px',
+    borderRadius: '50%',
+    background: 'rgba(238, 126, 31, 0.92)',
+    border: '3px solid rgba(255, 255, 255, 0.94)',
+    color: '#ffffff',
+    textAlign: 'center',
+    lineHeight: '52px',
+    fontWeight: '800',
+    boxShadow: '0 14px 32px rgba(117, 59, 18, 0.32)',
+  },
+  {
+    width: '66px',
+    height: '66px',
+    borderRadius: '50%',
+    background: 'rgba(210, 67, 67, 0.94)',
+    border: '3px solid rgba(255, 255, 255, 0.94)',
+    color: '#ffffff',
+    textAlign: 'center',
+    lineHeight: '60px',
+    fontWeight: '800',
+    boxShadow: '0 16px 36px rgba(111, 30, 30, 0.34)',
+  },
+]
 const playFacilityLocationCache = new Map()
 
 const env = import.meta.env
@@ -29,6 +94,7 @@ const DATASETS = [
     sourceUrl: 'https://www.data.go.kr/data/15058311/openapi.do',
     endpoint: '/data-api/B552061/schoolzoneChild/getRestSchoolzoneChild',
     serviceKeyParam: 'ServiceKey',
+    useLatestAvailableAccidentYear: true,
     description: '어린이보호구역 내 어린이 교통사고 다발지역',
     query: ({ accidentYear }) =>
       DAEJEON_GU_GUN_CODES.map((guGun) => ({
@@ -46,6 +112,7 @@ const DATASETS = [
     sourceUrl: 'https://www.data.go.kr/data/15058925/openapi.do',
     endpoint: '/data-api/B552061/frequentzoneChild/getRestFrequentzoneChild',
     serviceKeyParam: 'ServiceKey',
+    useLatestAvailableAccidentYear: true,
     description: '12세 이하 보행어린이 교통사고 다발지역',
     query: ({ accidentYear }) =>
       DAEJEON_GU_GUN_CODES.map((guGun) => ({
@@ -149,6 +216,83 @@ const FIELD_LABELS = {
   count: '수량',
   cs: '사상자수',
   death: '사망자수',
+  LMP_LC_NM: '보안등 위치',
+  INSTALLATION_CO: '설치개수',
+  INSTALLATION_TYPE: '설치유형',
+  REFERENCEDATE: '기준일',
+  RDNMADR: '도로명주소',
+  LNMADR: '지번주소',
+  LATITUDE: '위도',
+  LONGITUDE: '경도',
+  CTPRVNNM: '시도',
+  SIGNGU_NM: '시군구',
+  ROADNM: '도로명',
+  ROADKND: '도로종류',
+  ROAD_ROUTE_NO: '노선번호',
+  ROAD_ROUTE_NM: '노선명',
+  ROADROUTEDRC: '도로방향',
+  CRSLKKND: '횡단보도 종류',
+  BCYCLCRSLKCMBNATYN: '자전거 횡단 겸용',
+  HIGHLANDYN: '고원식 여부',
+  CARTRKCO: '차로수',
+  SGNLLKNND: '신호등 종류',
+  managementNumber: '관리번호',
+  ntatcSeq: '공고번호',
+  regDtTm: '등록일',
+  zipcode: '우편번호',
+  pfctSn: '시설번호',
+  pfctNm: '시설명',
+  zip: '우편번호',
+  lotnoAddr: '지번주소',
+  lotnoDaddr: '지번상세주소',
+  ronaAddr: '도로명주소',
+  ronaDaddr: '도로명상세주소',
+  instlYmd: '설치일',
+  clsgYmd: '폐쇄일',
+  acptnYmd: '인수일',
+  fcar: '면적',
+  etcSufa: '기타 안전시설',
+  rmk: '비고',
+  exfcSn: '우수시설번호',
+  dsgnYmd: '지정일',
+  fctyCd: '시설유형코드',
+  rgnCd: '지역코드',
+  instlPlaceCd: '설치장소코드',
+  instlPlaceCdNm: '설치장소',
+  dutyCd: '의무구분코드',
+  dutyCdNm: '의무구분',
+  prvtPblcYnCd: '민간/공공 코드',
+  prvtPblcYnCdNm: '민간/공공',
+  operYnCd: '운영코드',
+  operYnCdNm: '운영여부',
+  idrodrCd: '실내외 코드',
+  idrodrCdNm: '실내외',
+  exfcYn: '우수시설 여부',
+  exfcDsgnYmd: '우수시설 지정일',
+  rgnCdNm: '지역',
+  wowaStylRideCd: '물놀이형 기구 코드',
+  wowaStylRideCdNm: '물놀이형 기구',
+  rideSn: '기구번호',
+  rideNm: '기구명',
+  rideNo: '기구번호',
+  rideLctn: '기구위치',
+  rideInstlYmd: '기구 설치일',
+  instlFrmNm: '설치형태',
+  inspSn: '검사번호',
+  inspKndCd: '검사종류코드',
+  inspKndCdNm: '검사종류',
+  inspYmd: '검사일',
+  inspRsltCd: '검사결과코드',
+  inspRsltCdNm: '검사결과',
+  occrrnc_cnt: '사고건수',
+  caslt_cnt: '사상자수',
+  dth_dnv_cnt: '사망자수',
+  se_dnv_cnt: '중상자수',
+  sl_dnv_cnt: '경상자수',
+  wnd_dnv_cnt: '부상신고자수',
+  sido_sgg_nm: '지역',
+  spot_nm: '사고지점',
+  afos_id: '사고권역ID',
   facilityName: '시설명',
   instlCo: '설치개수',
   latitude: '위도',
@@ -227,8 +371,9 @@ function App() {
   const geocoderRef = useRef(null)
   const clustererRef = useRef(null)
   const markerRefs = useRef([])
-  const circleRefs = useRef([])
+  const rangeRefs = useRef([])
   const infoWindowRef = useRef(null)
+  const searchMarkerRef = useRef(null)
   const autoLoadedRef = useRef(false)
 
   const kakaoKey = env.VITE_KAKAO_MAP_APP_KEY || ''
@@ -253,36 +398,37 @@ function App() {
       ]),
     ),
   )
-  const [enabled, setEnabled] = useState(() =>
-    Object.fromEntries(DATASETS.map((dataset) => [dataset.id, true])),
-  )
-  const [selectedGroup, setSelectedGroup] = useState('all')
+  const [selectedCategory, setSelectedCategory] = useState('safety')
+  const [selectedRecord, setSelectedRecord] = useState(null)
+  const [searchText, setSearchText] = useState('')
+  const [searchTarget, setSearchTarget] = useState('')
+  const [searchVersion, setSearchVersion] = useState(0)
+  const [searchLocation, setSearchLocation] = useState(null)
+  const [hasSearched, setHasSearched] = useState(false)
+  const [searchState, setSearchState] = useState({
+    loading: false,
+    error: '',
+  })
   const [isLoadingData, setIsLoadingData] = useState(false)
 
-  const groups = useMemo(
-    () => ['all', ...new Set(DATASETS.map((dataset) => dataset.group))],
-    [],
-  )
-
   const activeRecords = useMemo(() => {
+    const category = CATEGORY_OPTIONS.find((option) => option.id === selectedCategory)
+    const datasetIds = new Set(category?.datasetIds || [])
+
     return DATASETS.flatMap((dataset) => {
-      if (!enabled[dataset.id]) return []
-      if (selectedGroup !== 'all' && dataset.group !== selectedGroup) return []
+      if (!datasetIds.has(dataset.id)) return []
       return results[dataset.id]?.records || []
     })
-  }, [enabled, results, selectedGroup])
+  }, [results, selectedCategory])
 
-  const totals = useMemo(() => {
-    const loaded = DATASETS.reduce(
-      (sum, dataset) => sum + (results[dataset.id]?.mappedCount || 0),
-      0,
-    )
-    const connected = DATASETS.filter((dataset) => dataset.endpoint).length
-    const errors = DATASETS.filter(
-      (dataset) => results[dataset.id]?.status === 'error',
-    ).length
-
-    return { loaded, connected, errors }
+  const categorySummary = useMemo(() => {
+    return CATEGORY_OPTIONS.map((category) => ({
+      ...category,
+      count: category.datasetIds.reduce(
+        (sum, datasetId) => sum + (results[datasetId]?.mappedCount || 0),
+        0,
+      ),
+    }))
   }, [results])
 
   const loadKakaoMap = useCallback(() => {
@@ -331,6 +477,8 @@ function App() {
             averageCenter: true,
             minLevel: 6,
             gridSize: 48,
+            calculator: CLUSTER_STEPS,
+            styles: CLUSTER_STYLES,
           })
         }
 
@@ -364,55 +512,69 @@ function App() {
   }, [kakaoKey])
 
   useEffect(() => {
-    if (!mapContainerRef.current) return
+    if (!hasSearched || !mapContainerRef.current) return
     loadKakaoMap()
-  }, [loadKakaoMap])
+  }, [hasSearched, loadKakaoMap])
 
   useEffect(() => {
     if (!mapState.ready || !mapRef.current) return
 
     markerRefs.current.forEach((marker) => marker.setMap(null))
     markerRefs.current = []
-    circleRefs.current.forEach((circle) => circle.setMap(null))
-    circleRefs.current = []
+    rangeRefs.current.forEach((overlay) => overlay.setMap(null))
+    rangeRefs.current = []
     clustererRef.current?.clear()
     infoWindowRef.current?.close()
 
     if (!activeRecords.length) return
 
     const bounds = new window.kakao.maps.LatLngBounds()
-    const markers = activeRecords.map((record) => {
+    const markers = activeRecords.flatMap((record) => {
       const position = new window.kakao.maps.LatLng(record.lat, record.lng)
+      const rangeOverlays = createRangeOverlays(record, position, mapRef.current)
+      const showRangeInfo = () => {
+        rangeOverlays.forEach((overlay) =>
+          overlay.setOptions(getRangeOverlayStyle(record, 'hover')),
+        )
+      }
+      const hideRangeInfo = () => {
+        rangeOverlays.forEach((overlay) =>
+          overlay.setOptions(getRangeOverlayStyle(record, 'normal')),
+        )
+      }
+
+      rangeOverlays.forEach((overlay) => {
+        window.kakao.maps.event.addListener(overlay, 'mouseover', showRangeInfo)
+        window.kakao.maps.event.addListener(overlay, 'mouseout', hideRangeInfo)
+        window.kakao.maps.event.addListener(overlay, 'click', () => {
+          setSelectedRecord(record)
+        })
+      })
+
+      bounds.extend(position)
+      rangeRefs.current.push(...rangeOverlays)
+
+      if (isMarkerlessRecord(record)) {
+        return []
+      }
+
       const marker = new window.kakao.maps.Marker({
         position,
         title: record.title,
         image: createMarkerImage(record.color),
       })
-      const circle = new window.kakao.maps.Circle({
-        map: mapRef.current,
-        center: position,
-        radius: getRecordRadius(record),
-        strokeWeight: 2,
-        strokeColor: record.color,
-        strokeOpacity: 0.85,
-        fillColor: record.color,
-        fillOpacity: 0.16,
-        zIndex: 1,
-      })
 
       window.kakao.maps.event.addListener(marker, 'mouseover', () => {
-        infoWindowRef.current.setContent(renderHoverContent(record))
-        infoWindowRef.current.open(mapRef.current, marker)
-        circle.setOptions({ fillOpacity: 0.28, strokeWeight: 4 })
+        rangeOverlays.forEach((overlay) =>
+          overlay.setOptions(getRangeOverlayStyle(record, 'hover')),
+        )
       })
-      window.kakao.maps.event.addListener(marker, 'mouseout', () => {
-        infoWindowRef.current.close()
-        circle.setOptions({ fillOpacity: 0.16, strokeWeight: 2 })
+      window.kakao.maps.event.addListener(marker, 'mouseout', hideRangeInfo)
+      window.kakao.maps.event.addListener(marker, 'click', () => {
+        setSelectedRecord(record)
       })
 
-      bounds.extend(position)
-      circleRefs.current.push(circle)
-      return marker
+      return [marker]
     })
 
     markerRefs.current = markers
@@ -423,13 +585,54 @@ function App() {
       markers.forEach((marker) => marker.setMap(mapRef.current))
     }
 
-    if (markers.length === 1) {
-      mapRef.current.setCenter(markers[0].getPosition())
+    if (searchLocation) return
+
+    if (activeRecords.length === 1) {
+      const [record] = activeRecords
+      mapRef.current.setCenter(new window.kakao.maps.LatLng(record.lat, record.lng))
       mapRef.current.setLevel(4)
     } else {
       mapRef.current.setBounds(bounds)
     }
-  }, [activeRecords, mapState.ready])
+  }, [activeRecords, mapState.ready, searchLocation])
+
+  useEffect(() => {
+    if (!hasSearched || !searchTarget || !mapState.ready || !mapRef.current) return
+
+    let cancelled = false
+    setSearchState({ loading: true, error: '' })
+
+    searchKakaoPlace(searchTarget)
+      .then((place) => {
+        if (cancelled) return
+
+        const position = new window.kakao.maps.LatLng(place.lat, place.lng)
+        mapRef.current.setCenter(position)
+        mapRef.current.setLevel(4)
+
+        searchMarkerRef.current?.setMap(null)
+        searchMarkerRef.current = new window.kakao.maps.Marker({
+          map: mapRef.current,
+          position,
+          title: place.name,
+        })
+
+        setSearchLocation(place)
+        setSearchState({ loading: false, error: '' })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setSearchLocation(null)
+        setSearchState({
+          loading: false,
+          error: error.message || '장소를 찾지 못했습니다.',
+        })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [hasSearched, searchTarget, searchVersion, mapState.ready])
 
   const loadAllData = async () => {
     if (!dataKey.trim()) {
@@ -524,124 +727,124 @@ function App() {
     loadAllData()
   }, [mapState.ready, dataKey])
 
-  const toggleDataset = (datasetId) => {
-    setEnabled((current) => ({
-      ...current,
-      [datasetId]: !current[datasetId],
-    }))
+  const handleSearchSubmit = (event) => {
+    event.preventDefault()
+
+    const query = searchText.trim()
+    if (!query) {
+      setSearchState({ loading: false, error: '장소 이름을 입력하세요.' })
+      return
+    }
+
+    setHasSearched(true)
+    setSearchTarget(query)
+    setSearchVersion((version) => version + 1)
+    setSearchLocation(null)
+    setSelectedRecord(null)
+    setSearchState({ loading: true, error: '' })
+  }
+
+  const selectCategory = (categoryId) => {
+    setSelectedCategory(categoryId)
+    setSelectedRecord(null)
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${hasSearched ? 'has-map' : 'is-search-only'}`}>
       <aside className="control-panel">
-        <div className="brand-block">
-          <span className="eyebrow">S4C Safety Map</span>
-          <h1>공공 안전 데이터 지도</h1>
-          <p>
-            공공데이터포털 10개 API를 카카오맵 위에 색상별 마커로 표시합니다.
-          </p>
-        </div>
-
-        <section className="panel-section">
-          <button
-            className="primary-action"
-            onClick={loadAllData}
-            type="button"
-            disabled={!mapState.ready || isLoadingData}
-          >
-            {isLoadingData ? '데이터 불러오는 중' : '데이터 불러오기'}
-          </button>
+        <form className="search-panel" onSubmit={handleSearchSubmit}>
+          <div className="brand-block">
+            <span className="eyebrow">S4C Safety Map</span>
+            <h1>아동 안전 지도</h1>
+            <p>장소를 검색하면 주변 안전·활동 정보를 지도에서 확인할 수 있습니다.</p>
+          </div>
+          <div className="search-row">
+            <input
+              aria-label="장소 검색"
+              onChange={(event) => setSearchText(event.target.value)}
+              placeholder="예: 대전시청, 둔산동, 한밭수목원"
+              type="search"
+              value={searchText}
+            />
+            <button className="primary-action" type="submit">
+              검색
+            </button>
+          </div>
+          {searchState.loading ? <p className="message">장소를 찾는 중입니다.</p> : null}
+          {searchState.error ? (
+            <p className="message error">{searchState.error}</p>
+          ) : null}
           {mapState.error ? <p className="message error">{mapState.error}</p> : null}
-        </section>
+        </form>
 
-        <section className="metric-strip" aria-label="데이터 요약">
-          <div>
-            <strong>{totals.loaded.toLocaleString()}</strong>
-            <span>표시 지점</span>
-          </div>
-          <div>
-            <strong>{activeRecords.length.toLocaleString()}</strong>
-            <span>현재 보기</span>
-          </div>
-          <div>
-            <strong>
-              {totals.connected}/{DATASETS.length}
-            </strong>
-            <span>연결 API</span>
-          </div>
-        </section>
-
-        <section className="panel-section">
-          <h2>분류</h2>
-          <div className="segmented-control">
-            {groups.map((group) => (
-              <button
-                key={group}
-                className={selectedGroup === group ? 'is-active' : ''}
-                type="button"
-                onClick={() => setSelectedGroup(group)}
-              >
-                {group === 'all' ? '전체' : group}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="dataset-list" aria-label="데이터셋 목록">
-          {DATASETS.map((dataset) => {
-            const result = results[dataset.id]
-            const status = dataset.endpoint ? result.status : 'needs-endpoint'
-            return (
-              <article className="dataset-row" key={dataset.id}>
+        {hasSearched ? (
+          <>
+            <section className="category-tabs" aria-label="정보 분류">
+              {categorySummary.map((category) => (
                 <button
-                  className={`toggle-dot ${enabled[dataset.id] ? 'is-on' : ''}`}
-                  style={{ '--dot-color': dataset.color }}
+                  className={selectedCategory === category.id ? 'is-active' : ''}
+                  key={category.id}
+                  onClick={() => selectCategory(category.id)}
                   type="button"
-                  aria-label={`${dataset.name} 표시 전환`}
-                  onClick={() => toggleDataset(dataset.id)}
-                />
-                <div className="dataset-copy">
-                  <div className="dataset-title">
-                    <strong>{dataset.name}</strong>
-                    <span>{resultLabel(status)}</span>
+                >
+                  <strong>{category.label}</strong>
+                  <span>{category.count.toLocaleString()}건</span>
+                </button>
+              ))}
+            </section>
+
+            <section className="selected-panel" aria-label="선택한 정보">
+              {selectedRecord ? (
+                <article className="selected-card">
+                  <span
+                    className="selected-card__tag"
+                    style={{ '--tag-color': selectedRecord.color }}
+                  >
+                    {selectedRecord.datasetName}
+                  </span>
+                  <h2>{selectedRecord.title}</h2>
+                  {selectedRecord.address ? <p>{selectedRecord.address}</p> : null}
+                  <div className="detail-list">
+                    {selectedRecord.details.map((detail) => (
+                      <div key={`${detail.label}:${detail.value}`}>
+                        <span>{detail.label}</span>
+                        <strong>{detail.value}</strong>
+                      </div>
+                    ))}
                   </div>
-                  <p>{dataset.description}</p>
-                  <div className="dataset-meta">
-                    <span>{dataset.id}</span>
-                    <span>{dataset.group}</span>
-                    <span>
-                      {result.mappedCount.toLocaleString()} /{' '}
-                      {result.rawCount.toLocaleString()}
-                    </span>
-                  </div>
-                  {result.error ? <p className="message">{result.error}</p> : null}
+                </article>
+              ) : (
+                <div className="empty-selection">
+                  <strong>
+                    {searchLocation?.name || searchTarget || '검색 위치'}
+                  </strong>
+                  <span>
+                    {selectedCategory === 'safety'
+                      ? '주변 아동 안전 정보를 표시하고 있습니다.'
+                      : '주변 아동 활동 공간을 표시하고 있습니다.'}
+                  </span>
                 </div>
-              </article>
-            )
-          })}
-        </section>
+              )}
+            </section>
+
+            {isLoadingData ? <p className="message">공공데이터를 불러오는 중입니다.</p> : null}
+          </>
+        ) : null}
       </aside>
 
-      <section className="map-stage" aria-label="카카오맵">
-        <div className="map-toolbar">
-          <div>
-            <strong>대전 중심 지도</strong>
-            <span>색상 마커와 반경 표시로 실제 지점 위치를 강조합니다.</span>
-          </div>
-          <button type="button" onClick={loadKakaoMap}>
-            지도 다시 불러오기
-          </button>
-        </div>
-        <div ref={mapContainerRef} className="map-canvas" />
-        {!mapState.ready ? (
-          <div className="map-placeholder">
-            <strong>
-              {mapState.loading ? '카카오맵을 불러오는 중' : '지도 준비 필요'}
-            </strong>
-            <span>.env의 카카오맵 키와 등록 도메인을 확인하세요.</span>
-          </div>
-        ) : null}
-      </section>
+      {hasSearched ? (
+        <section className="map-stage" aria-label="카카오맵">
+          <div ref={mapContainerRef} className="map-canvas" />
+          {!mapState.ready ? (
+            <div className="map-placeholder">
+              <strong>
+                {mapState.loading ? '카카오맵을 불러오는 중' : '지도 준비 필요'}
+              </strong>
+              <span>.env의 카카오맵 키와 등록 도메인을 확인하세요.</span>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
     </main>
   )
 }
@@ -651,28 +854,46 @@ async function fetchDataset(dataset, options) {
     return { rawCount: 0, records: [], notice: '요청주소가 비어 있습니다.' }
   }
 
-  const queries = getDatasetQueries(dataset, options)
+  const queryGroups = getDatasetQueryGroups(dataset, options)
   const rawRecords = []
   const requestErrors = []
+  let selectedQueryGroup = ''
 
-  for (const query of queries) {
-    try {
-      const url = buildRequestUrl(dataset, options, query)
-      const response = await fetch(url)
-      const text = await response.text()
+  for (const group of queryGroups) {
+    const groupRecords = []
+    const groupErrors = []
 
-      if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`)
+    for (const query of group.queries) {
+      try {
+        const url = buildRequestUrl(dataset, options, query)
+        const response = await fetch(url)
+        const text = await response.text()
+
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}`)
+        }
+
+        const payload = parsePayload(text)
+        const apiError = findApiError(payload)
+        if (apiError) {
+          if (isNoDataPayload(payload)) continue
+          throw new Error(apiError)
+        }
+
+        groupRecords.push(...collectRecords(payload))
+      } catch (error) {
+        groupErrors.push(error.message || '요청 실패')
       }
-
-      const payload = parsePayload(text)
-      const apiError = findApiError(payload)
-      if (apiError) throw new Error(apiError)
-
-      rawRecords.push(...collectRecords(payload))
-    } catch (error) {
-      requestErrors.push(error.message || '요청 실패')
     }
+
+    if (groupRecords.length || !dataset.useLatestAvailableAccidentYear) {
+      rawRecords.push(...groupRecords)
+      requestErrors.push(...groupErrors)
+      selectedQueryGroup = group.label
+      break
+    }
+
+    requestErrors.push(...groupErrors)
   }
 
   if (!rawRecords.length && requestErrors.length) {
@@ -708,6 +929,9 @@ async function fetchDataset(dataset, options) {
   if (requestErrors.length > 0) {
     noticeParts.push(`일부 요청 실패 ${requestErrors.length}건`)
   }
+  if (selectedQueryGroup && selectedQueryGroup !== options.accidentYear) {
+    noticeParts.push(`accidentYear ${selectedQueryGroup}`)
+  }
 
   return {
     rawCount: uniqueRecords.length,
@@ -720,6 +944,27 @@ function getDatasetQueries(dataset, { accidentYear }) {
   const query = typeof dataset.query === 'function' ? dataset.query({ accidentYear }) : null
   if (Array.isArray(query)) return query
   return [query || { type: 'json' }]
+}
+
+function getDatasetQueryGroups(dataset, options) {
+  if (!dataset.useLatestAvailableAccidentYear) {
+    return [
+      {
+        label: '',
+        queries: getDatasetQueries(dataset, options),
+      },
+    ]
+  }
+
+  const latestYear = Number(options.accidentYear)
+  const years = Array.from({ length: ACCIDENT_YEAR_LOOKBACK }, (_, index) =>
+    String(latestYear - index),
+  ).filter((year) => Number.isFinite(Number(year)))
+
+  return years.map((accidentYear) => ({
+    label: accidentYear,
+    queries: getDatasetQueries(dataset, { ...options, accidentYear }),
+  }))
 }
 
 function buildRequestUrl(dataset, { serviceKey }, query) {
@@ -777,6 +1022,14 @@ function findApiError(payload) {
     return ''
   }
   return message ? `${code}: ${message}` : String(code)
+}
+
+function isNoDataPayload(payload) {
+  const flat = flattenObject(payload)
+  const code = String(flat.resultCode || '').trim().toUpperCase()
+  const message = String(flat.resultMsg || flat.returnAuthMsg || '').toUpperCase()
+
+  return code === '03' || message.includes('NODATA')
 }
 
 function collectRecords(payload) {
@@ -846,6 +1099,8 @@ async function normalizeRecord(item, dataset, context = {}) {
   if (!isKoreanCoordinate(lat, lng)) return null
   if (!isDaejeonRecord(flat, lat, lng)) return null
 
+  const metrics = getRecordMetrics(flat)
+  const rangeRadius = getDataDrivenRadius(dataset, flat)
   const title =
     readAny(flat, NAME_KEYS) ||
     address ||
@@ -862,7 +1117,15 @@ async function normalizeRecord(item, dataset, context = {}) {
     lat,
     lng,
     geocoded,
-    details: mergeDetails(pickDetails(flat), lookupDetails),
+    radius: rangeRadius,
+    metrics,
+    details: mergeDetails(
+      [
+        ...getMetricDetails(metrics),
+        ...getRadiusDetails(rangeRadius),
+      ],
+      mergeDetails(pickDetails(flat), lookupDetails),
+    ),
   }
 }
 
@@ -934,6 +1197,49 @@ function geocodeAddress(geocoder, address) {
   })
 }
 
+function searchKakaoPlace(query) {
+  return new Promise((resolve, reject) => {
+    if (!window.kakao?.maps?.services) {
+      reject(new Error('카카오맵 검색을 사용할 수 없습니다.'))
+      return
+    }
+
+    const places = new window.kakao.maps.services.Places()
+    places.keywordSearch(query, (results, status) => {
+      if (status === window.kakao.maps.services.Status.OK && results[0]) {
+        resolve({
+          name: results[0].place_name || query,
+          address:
+            results[0].road_address_name ||
+            results[0].address_name ||
+            '',
+          lat: Number(results[0].y),
+          lng: Number(results[0].x),
+        })
+        return
+      }
+
+      const geocoder = new window.kakao.maps.services.Geocoder()
+      geocoder.addressSearch(query, (addressResults, addressStatus) => {
+        if (
+          addressStatus !== window.kakao.maps.services.Status.OK ||
+          !addressResults[0]
+        ) {
+          reject(new Error('검색 결과가 없습니다. 다른 장소명을 입력해 보세요.'))
+          return
+        }
+
+        resolve({
+          name: query,
+          address: addressResults[0].address_name || '',
+          lat: Number(addressResults[0].y),
+          lng: Number(addressResults[0].x),
+        })
+      })
+    })
+  })
+}
+
 function flattenObject(value, prefix = '', acc = {}) {
   if (!value || typeof value !== 'object') return acc
 
@@ -963,6 +1269,38 @@ function readAny(record, keys) {
   return ''
 }
 
+function getRecordMetrics(record) {
+  return {
+    accidentCount: parseCount(readAny(record, ['occrrnc_cnt', 'accidents', 'accidentCount'])),
+    casualtyCount: parseCount(readAny(record, ['caslt_cnt', 'cs'])),
+    deathCount: parseCount(readAny(record, ['dth_dnv_cnt', 'death'])),
+    seriousInjuryCount: parseCount(readAny(record, ['se_dnv_cnt'])),
+    minorInjuryCount: parseCount(readAny(record, ['sl_dnv_cnt'])),
+    injuryReportCount: parseCount(readAny(record, ['wnd_dnv_cnt'])),
+  }
+}
+
+function getMetricDetails(metrics) {
+  return [
+    ['사고건수', metrics.accidentCount, '건'],
+    ['사상자수', metrics.casualtyCount, '명'],
+    ['사망자수', metrics.deathCount, '명'],
+    ['중상자수', metrics.seriousInjuryCount, '명'],
+    ['경상자수', metrics.minorInjuryCount, '명'],
+    ['부상신고자수', metrics.injuryReportCount, '명'],
+  ]
+    .filter(([, value]) => value > 0)
+    .map(([label, value, unit]) => ({
+      label,
+      value: `${value.toLocaleString()}${unit}`,
+    }))
+}
+
+function getRadiusDetails(radius) {
+  if (!radius) return []
+  return [{ label: '표시반경', value: `${Math.round(radius).toLocaleString()}m` }]
+}
+
 function pickDetails(record) {
   const ignored = new Set([
     ...LAT_KEYS,
@@ -973,6 +1311,12 @@ function pickDetails(record) {
     'body',
     'items',
     'item',
+    'occrrnc_cnt',
+    'caslt_cnt',
+    'dth_dnv_cnt',
+    'se_dnv_cnt',
+    'sl_dnv_cnt',
+    'wnd_dnv_cnt',
   ])
 
   return Object.entries(record)
@@ -1024,6 +1368,19 @@ function parseCoordinate(value) {
   return Number.isFinite(number) ? number : null
 }
 
+function parseCount(value) {
+  if (!hasValue(value)) return 0
+  const number = Number(String(value).replace(/,/g, '').trim())
+  return Number.isFinite(number) ? number : 0
+}
+
+function parseArea(value) {
+  if (!hasValue(value)) return 0
+  const normalized = String(value).replace(/,/g, '').replace(/[^\d.]/g, '')
+  const number = Number(normalized)
+  return Number.isFinite(number) ? number : 0
+}
+
 function isKoreanCoordinate(lat, lng) {
   return lat >= 33 && lat <= 39.5 && lng >= 124 && lng <= 132
 }
@@ -1053,11 +1410,81 @@ function isDaejeonRecord(record, lat, lng) {
 }
 
 function getRecordRadius(record) {
-  if (record.datasetId === '15058311') return 300
-  if (record.datasetId === '15058925') return 200
+  if (record.radius) return record.radius
+  if (isSecurityLightRecord(record)) return 8
+  if (isCrosswalkRecord(record)) return 22.5
   if (record.group === '도로시설') return 45
   if (record.group === '어린이놀이시설') return 70
   return 90
+}
+
+function isSecurityLightRecord(record) {
+  return record.datasetId === '15110685'
+}
+
+function isCrosswalkRecord(record) {
+  return record.datasetId === '15110672'
+}
+
+function isAccidentZoneRecord(record) {
+  return record.datasetId === '15058311' || record.datasetId === '15058925'
+}
+
+function isMarkerlessRecord(record) {
+  return (
+    isAccidentZoneRecord(record) ||
+    isSecurityLightRecord(record) ||
+    isCrosswalkRecord(record)
+  )
+}
+
+function getDataDrivenRadius(dataset, record) {
+  if (dataset.useLatestAvailableAccidentYear) return ACCIDENT_ZONE_RADIUS_METERS
+
+  if (dataset.id === '15007270') {
+    return areaToDisplayRadius(readAny(record, ['parkArea', 'park_area']))
+  }
+
+  return null
+}
+
+function areaToDisplayRadius(areaValue) {
+  const area = parseArea(areaValue)
+  if (!area) return null
+
+  const equivalentRadius = Math.sqrt(area / Math.PI)
+  return Math.min(Math.max(equivalentRadius, 30), 600)
+}
+
+function createRangeOverlays(record, position, map) {
+  const style = getRangeOverlayStyle(record, 'normal')
+  const baseOptions = {
+    map,
+    strokeColor: record.color,
+    fillColor: record.color,
+    zIndex: 1,
+    ...style,
+  }
+
+  return [
+    new window.kakao.maps.Circle({
+      ...baseOptions,
+      center: position,
+      radius: getRecordRadius(record),
+    }),
+  ]
+}
+
+function getRangeOverlayStyle(record, state) {
+  if (isSecurityLightRecord(record)) {
+    return state === 'hover'
+      ? { strokeWeight: 2, strokeOpacity: 1, fillOpacity: 0.95 }
+      : { strokeWeight: 1, strokeOpacity: 0.9, fillOpacity: 0.72 }
+  }
+
+  return state === 'hover'
+    ? { strokeWeight: 4, strokeOpacity: 0.9, fillOpacity: 0.28 }
+    : { strokeWeight: 2, strokeOpacity: 0.85, fillOpacity: 0.16 }
 }
 
 function createMarkerImage(color) {
@@ -1075,53 +1502,6 @@ function createMarkerImage(color) {
     new window.kakao.maps.Size(42, 50),
     { offset: new window.kakao.maps.Point(21, 49) },
   )
-}
-
-function renderHoverContent(record) {
-  const details = record.details
-    .map(
-      (detail) =>
-        `<div><span>${escapeHtml(detail.label)}</span><strong>${escapeHtml(
-          detail.value,
-        )}</strong></div>`,
-    )
-    .join('')
-
-  return `
-    <div class="hover-card">
-      <div class="hover-card__head" style="border-color:${record.color}">
-        <span>${escapeHtml(record.datasetName)}</span>
-        <strong>${escapeHtml(record.title)}</strong>
-      </div>
-      ${
-        record.address
-          ? `<p class="hover-card__address">${escapeHtml(record.address)}</p>`
-          : ''
-      }
-      <div class="hover-card__details">${details}</div>
-      <p class="hover-card__source">출처: ${escapeHtml(record.sourceUrl)}</p>
-    </div>
-  `
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;')
-}
-
-function resultLabel(status) {
-  const labels = {
-    idle: '대기',
-    loading: '조회중',
-    loaded: '완료',
-    error: '오류',
-    'needs-endpoint': 'API 미연결',
-  }
-  return labels[status] || status
 }
 
 export default App
