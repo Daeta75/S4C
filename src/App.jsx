@@ -3,12 +3,14 @@ import './App.css'
 
 const DAEJEON_CENTER = { lat: 36.3504, lng: 127.3845 }
 const DEFAULT_ROWS = 500
-const MAX_LOCATION_LOOKUPS = 120
 const ACCIDENT_YEAR_LOOKBACK = 5
 const ACCIDENT_ZONE_RADIUS_METERS = 186
+const MAX_PAGES_PER_DATASET = 300
+const LOCATION_LOOKUP_CONCURRENCY = 8
 const LATEST_ACCIDENT_YEAR = String(new Date().getFullYear() - 1)
 const DAEJEON_REGION_NAME = '대전광역시'
 const DAEJEON_GU_GUN_CODES = ['110', '140', '170', '200', '230']
+const ACTIVITY_EXCELLENT_DATASET_ID = '15124527'
 const CATEGORY_OPTIONS = [
   {
     id: 'safety',
@@ -410,16 +412,20 @@ function App() {
     error: '',
   })
   const [isLoadingData, setIsLoadingData] = useState(false)
+  const [activityFilter, setActivityFilter] = useState('all')
 
   const activeRecords = useMemo(() => {
     const category = CATEGORY_OPTIONS.find((option) => option.id === selectedCategory)
-    const datasetIds = new Set(category?.datasetIds || [])
+    const datasetIds =
+      selectedCategory === 'activity' && activityFilter === 'excellent'
+        ? new Set([ACTIVITY_EXCELLENT_DATASET_ID])
+        : new Set(category?.datasetIds || [])
 
     return DATASETS.flatMap((dataset) => {
       if (!datasetIds.has(dataset.id)) return []
       return results[dataset.id]?.records || []
     })
-  }, [results, selectedCategory])
+  }, [activityFilter, results, selectedCategory])
 
   const categorySummary = useMemo(() => {
     return CATEGORY_OPTIONS.map((category) => ({
@@ -429,6 +435,17 @@ function App() {
         0,
       ),
     }))
+  }, [results])
+
+  const activitySummary = useMemo(() => {
+    const activityCategory = CATEGORY_OPTIONS.find((option) => option.id === 'activity')
+    return {
+      all: activityCategory?.datasetIds.reduce(
+        (sum, datasetId) => sum + (results[datasetId]?.mappedCount || 0),
+        0,
+      ) || 0,
+      excellent: results[ACTIVITY_EXCELLENT_DATASET_ID]?.mappedCount || 0,
+    }
   }, [results])
 
   const loadKakaoMap = useCallback(() => {
@@ -634,7 +651,7 @@ function App() {
     }
   }, [hasSearched, searchTarget, searchVersion, mapState.ready])
 
-  const loadAllData = async () => {
+  const loadAllData = useCallback(async () => {
     if (!dataKey.trim()) {
       setResults((current) =>
         Object.fromEntries(
@@ -719,13 +736,13 @@ function App() {
       ),
     )
     setIsLoadingData(false)
-  }
+  }, [accidentYear, dataKey])
 
   useEffect(() => {
     if (!mapState.ready || !dataKey.trim() || autoLoadedRef.current) return
     autoLoadedRef.current = true
     loadAllData()
-  }, [mapState.ready, dataKey])
+  }, [mapState.ready, dataKey, loadAllData])
 
   const handleSearchSubmit = (event) => {
     event.preventDefault()
@@ -746,6 +763,11 @@ function App() {
 
   const selectCategory = (categoryId) => {
     setSelectedCategory(categoryId)
+    setSelectedRecord(null)
+  }
+
+  const selectActivityFilter = (filter) => {
+    setActivityFilter(filter)
     setSelectedRecord(null)
   }
 
@@ -792,6 +814,27 @@ function App() {
                 </button>
               ))}
             </section>
+
+            {selectedCategory === 'activity' ? (
+              <section className="activity-filter" aria-label="아동 활동 필터">
+                <div className="segmented-control">
+                  <button
+                    className={activityFilter === 'all' ? 'is-active' : ''}
+                    onClick={() => selectActivityFilter('all')}
+                    type="button"
+                  >
+                    전체 {activitySummary.all.toLocaleString()}
+                  </button>
+                  <button
+                    className={activityFilter === 'excellent' ? 'is-active' : ''}
+                    onClick={() => selectActivityFilter('excellent')}
+                    type="button"
+                  >
+                    우수 시설 {activitySummary.excellent.toLocaleString()}
+                  </button>
+                </div>
+              </section>
+            ) : null}
 
             <section className="selected-panel" aria-label="선택한 정보">
               {selectedRecord ? (
@@ -864,26 +907,9 @@ async function fetchDataset(dataset, options) {
     const groupErrors = []
 
     for (const query of group.queries) {
-      try {
-        const url = buildRequestUrl(dataset, options, query)
-        const response = await fetch(url)
-        const text = await response.text()
-
-        if (!response.ok) {
-          throw new Error(`${response.status} ${response.statusText}`)
-        }
-
-        const payload = parsePayload(text)
-        const apiError = findApiError(payload)
-        if (apiError) {
-          if (isNoDataPayload(payload)) continue
-          throw new Error(apiError)
-        }
-
-        groupRecords.push(...collectRecords(payload))
-      } catch (error) {
-        groupErrors.push(error.message || '요청 실패')
-      }
+      const result = await fetchDatasetQueryPages(dataset, options, query)
+      groupRecords.push(...result.records)
+      groupErrors.push(...result.errors)
     }
 
     if (groupRecords.length || !dataset.useLatestAvailableAccidentYear) {
@@ -905,16 +931,20 @@ async function fetchDataset(dataset, options) {
   let geocoded = 0
   let locationLookups = 0
 
-  for (const item of uniqueRecords.slice(0, DEFAULT_ROWS)) {
-    const shouldLookup =
-      dataset.locationLookup === 'playFacility' &&
-      locationLookups < MAX_LOCATION_LOOKUPS
+  if (dataset.locationLookup === 'playFacility') {
+    locationLookups = await warmPlayFacilityLocationCache(
+      uniqueRecords,
+      options.serviceKey,
+      options.geocoder,
+    )
+  }
+
+  for (const item of uniqueRecords) {
     const normalized = await normalizeRecord(item, dataset, {
       geocoder: options.geocoder,
       serviceKey: options.serviceKey,
-      shouldLookup,
+      shouldLookup: dataset.locationLookup === 'playFacility',
     })
-    if (shouldLookup) locationLookups += 1
     if (normalized) {
       records.push(normalized)
       if (normalized.geocoded) geocoded += 1
@@ -923,7 +953,7 @@ async function fetchDataset(dataset, options) {
 
   const skipped = uniqueRecords.length - records.length
   const noticeParts = []
-  if (skipped > 0) noticeParts.push(`좌표 없는 ${skipped}건 제외`)
+  if (skipped > 0) noticeParts.push(`표시 제외 ${skipped}건(좌표/지역 불일치)`)
   if (geocoded > 0) noticeParts.push(`주소 변환 ${geocoded}건`)
   if (locationLookups > 0) noticeParts.push(`시설 위치 매칭 ${locationLookups}건`)
   if (requestErrors.length > 0) {
@@ -940,10 +970,82 @@ async function fetchDataset(dataset, options) {
   }
 }
 
+async function fetchDatasetQueryPages(dataset, options, query) {
+  const records = []
+  const errors = []
+  const { pageSize } = getPaginationConfig(query)
+
+  for (let page = 1; page <= MAX_PAGES_PER_DATASET; page += 1) {
+    try {
+      const pagedQuery = getPagedQuery(query, page)
+      const url = buildRequestUrl(dataset, options, pagedQuery)
+      const response = await fetch(url)
+      const text = await response.text()
+
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`)
+      }
+
+      const payload = parsePayload(text)
+      const apiError = findApiError(payload)
+      if (apiError) {
+        if (isNoDataPayload(payload)) break
+        throw new Error(apiError)
+      }
+
+      const pageRecords = collectRecords(payload)
+      records.push(...pageRecords)
+
+      const totalCount = getPayloadTotalCount(payload)
+      if (
+        !pageRecords.length ||
+        pageRecords.length < pageSize ||
+        (totalCount > 0 && records.length >= totalCount)
+      ) {
+        break
+      }
+    } catch (error) {
+      errors.push(error.message || '요청 실패')
+      break
+    }
+  }
+
+  if (records.length >= MAX_PAGES_PER_DATASET * pageSize) {
+    errors.push(`최대 ${MAX_PAGES_PER_DATASET}페이지까지만 불러왔습니다.`)
+  }
+
+  return { records, errors }
+}
+
 function getDatasetQueries(dataset, { accidentYear }) {
   const query = typeof dataset.query === 'function' ? dataset.query({ accidentYear }) : null
   if (Array.isArray(query)) return query
   return [query || { type: 'json' }]
+}
+
+function getPaginationConfig(query = {}) {
+  if ('pageIndex' in query || 'recordCountPerPage' in query) {
+    return {
+      pageKey: 'pageIndex',
+      sizeKey: 'recordCountPerPage',
+      pageSize: Number(query.recordCountPerPage) || DEFAULT_ROWS,
+    }
+  }
+
+  return {
+    pageKey: 'pageNo',
+    sizeKey: 'numOfRows',
+    pageSize: Number(query.numOfRows) || DEFAULT_ROWS,
+  }
+}
+
+function getPagedQuery(query = {}, page) {
+  const { pageKey, sizeKey, pageSize } = getPaginationConfig(query)
+  return {
+    ...query,
+    [pageKey]: String(page),
+    [sizeKey]: String(pageSize),
+  }
 }
 
 function getDatasetQueryGroups(dataset, options) {
@@ -1032,6 +1134,11 @@ function isNoDataPayload(payload) {
   return code === '03' || message.includes('NODATA')
 }
 
+function getPayloadTotalCount(payload) {
+  const flat = flattenObject(payload)
+  return parseCount(flat.totalCount || flat.totalCnt)
+}
+
 function collectRecords(payload) {
   const candidates = []
 
@@ -1077,6 +1184,7 @@ async function normalizeRecord(item, dataset, context = {}) {
     const location = await lookupPlayFacilityLocation(
       readAny(flat, ['pfctSn', 'PFCT_SN', '놀이시설번호']),
       context.serviceKey,
+      context.geocoder,
     )
     if (location) {
       lat = location.lat
@@ -1087,6 +1195,10 @@ async function normalizeRecord(item, dataset, context = {}) {
   }
 
   let geocoded = false
+  if (!isKoreanCoordinate(lat, lng) && address && !hasDaejeonRecordText(flat, address)) {
+    return null
+  }
+
   if ((!lat || !lng) && address && context.geocoder) {
     const point = await geocodeAddress(context.geocoder, address)
     if (point) {
@@ -1106,7 +1218,7 @@ async function normalizeRecord(item, dataset, context = {}) {
     address ||
     `${dataset.name} ${Math.abs(lat).toFixed(5)}, ${Math.abs(lng).toFixed(5)}`
 
-  return {
+  const normalized = {
     datasetId: dataset.id,
     datasetName: dataset.name,
     sourceUrl: dataset.sourceUrl,
@@ -1127,22 +1239,74 @@ async function normalizeRecord(item, dataset, context = {}) {
       mergeDetails(pickDetails(flat), lookupDetails),
     ),
   }
+
+  cachePlayFacilityLocation(flat, normalized)
+
+  return normalized
 }
 
-async function lookupPlayFacilityLocation(pfctSn, serviceKey) {
+async function warmPlayFacilityLocationCache(records, serviceKey, geocoder) {
+  if (!serviceKey || !geocoder) return 0
+
+  const ids = [
+    ...new Set(
+      records
+        .map((record) =>
+          readAny(flattenObject(record), ['pfctSn', 'PFCT_SN', '놀이시설번호']),
+        )
+        .filter(hasValue)
+        .map(String),
+    ),
+  ].filter((id) => !playFacilityLocationCache.has(id))
+
+  let lookedUp = 0
+  let cursor = 0
+
+  const workers = Array.from(
+    { length: Math.min(LOCATION_LOOKUP_CONCURRENCY, ids.length) },
+    async () => {
+      while (cursor < ids.length) {
+        const id = ids[cursor]
+        cursor += 1
+        await lookupPlayFacilityLocation(id, serviceKey, geocoder)
+        lookedUp += 1
+      }
+    },
+  )
+
+  await Promise.all(workers)
+  return lookedUp
+}
+
+function cachePlayFacilityLocation(record, normalized) {
+  const pfctSn = readAny(record, ['pfctSn', 'PFCT_SN', '놀이시설번호'])
+  if (!hasValue(pfctSn) || normalized.datasetId !== '15124519') return
+
+  playFacilityLocationCache.set(String(pfctSn), {
+    lat: normalized.lat,
+    lng: normalized.lng,
+    address: normalized.address,
+    details: normalized.details.map((detail) => ({
+      ...detail,
+      label: `기본정보 ${detail.label}`,
+    })),
+  })
+}
+
+async function lookupPlayFacilityLocation(pfctSn, serviceKey, geocoder) {
   if (!hasValue(pfctSn)) return null
   const cacheKey = String(pfctSn)
   if (playFacilityLocationCache.has(cacheKey)) {
     return playFacilityLocationCache.get(cacheKey)
   }
 
-  const url = new URL('/data-api/1741000/pfc3/getPfctInfo3', window.location.origin)
-  url.searchParams.set('serviceKey', serviceKey)
-  url.searchParams.set('pageIndex', '1')
-  url.searchParams.set('recordCountPerPage', '1')
-  url.searchParams.set('pfctSn', cacheKey)
+  const request = (async () => {
+    const url = new URL('/data-api/1741000/pfc3/getPfctInfo3', window.location.origin)
+    url.searchParams.set('serviceKey', serviceKey)
+    url.searchParams.set('pageIndex', '1')
+    url.searchParams.set('recordCountPerPage', '1')
+    url.searchParams.set('pfctSn', cacheKey)
 
-  try {
     const response = await fetch(url)
     const text = await response.text()
     if (!response.ok) throw new Error(response.statusText)
@@ -1155,16 +1319,23 @@ async function lookupPlayFacilityLocation(pfctSn, serviceKey) {
     }
 
     const flat = flattenObject(item)
-    const lat = parseCoordinate(readAny(flat, LAT_KEYS))
-    const lng = parseCoordinate(readAny(flat, LNG_KEYS))
+    let lat = parseCoordinate(readAny(flat, LAT_KEYS))
+    let lng = parseCoordinate(readAny(flat, LNG_KEYS))
     const address = readAny(flat, ADDRESS_KEYS)
 
+    if (!isKoreanCoordinate(lat, lng) && address && geocoder) {
+      const point = await geocodeAddress(geocoder, address)
+      if (point) {
+        lat = point.lat
+        lng = point.lng
+      }
+    }
+
     if (!isKoreanCoordinate(lat, lng)) {
-      playFacilityLocationCache.set(cacheKey, null)
       return null
     }
 
-    const location = {
+    return {
       lat,
       lng,
       address: address ? String(address) : '',
@@ -1173,13 +1344,15 @@ async function lookupPlayFacilityLocation(pfctSn, serviceKey) {
         label: `기본정보 ${detail.label}`,
       })),
     }
+  })()
+    .catch(() => null)
+    .then((location) => {
+      playFacilityLocationCache.set(cacheKey, location)
+      return location
+    })
 
-    playFacilityLocationCache.set(cacheKey, location)
-    return location
-  } catch {
-    playFacilityLocationCache.set(cacheKey, null)
-    return null
-  }
+  playFacilityLocationCache.set(cacheKey, request)
+  return request
 }
 
 function geocodeAddress(geocoder, address) {
@@ -1385,8 +1558,9 @@ function isKoreanCoordinate(lat, lng) {
   return lat >= 33 && lat <= 39.5 && lng >= 124 && lng <= 132
 }
 
-function isDaejeonRecord(record, lat, lng) {
+function hasDaejeonRecordText(record, extraText = '') {
   const regionText = [
+    extraText,
     record.rgnNm,
     record.rgnCdNm,
     record.RDNMADR,
@@ -1402,7 +1576,19 @@ function isDaejeonRecord(record, lat, lng) {
     .filter(hasValue)
     .join(' ')
 
-  if (regionText.includes(DAEJEON_REGION_NAME) || regionText.includes('대전')) {
+  return regionText.includes(DAEJEON_REGION_NAME) || regionText.includes('대전')
+}
+
+function isDaejeonRegionCode(value) {
+  return hasValue(value) && String(value).trim().startsWith('30')
+}
+
+function isDaejeonRecord(record, lat, lng) {
+  if (
+    hasDaejeonRecordText(record) ||
+    isDaejeonRegionCode(record.rgnCd) ||
+    isDaejeonRegionCode(record.RGN_CD)
+  ) {
     return true
   }
 
@@ -1411,7 +1597,8 @@ function isDaejeonRecord(record, lat, lng) {
 
 function getRecordRadius(record) {
   if (record.radius) return record.radius
-  if (isSecurityLightRecord(record)) return 8
+  if (isSecurityLightRecord(record)) return 6
+  if (isTrafficSignalRecord(record)) return 13.5
   if (isCrosswalkRecord(record)) return 22.5
   if (record.group === '도로시설') return 45
   if (record.group === '어린이놀이시설') return 70
@@ -1426,6 +1613,10 @@ function isCrosswalkRecord(record) {
   return record.datasetId === '15110672'
 }
 
+function isTrafficSignalRecord(record) {
+  return record.datasetId === '15110706'
+}
+
 function isAccidentZoneRecord(record) {
   return record.datasetId === '15058311' || record.datasetId === '15058925'
 }
@@ -1434,6 +1625,7 @@ function isMarkerlessRecord(record) {
   return (
     isAccidentZoneRecord(record) ||
     isSecurityLightRecord(record) ||
+    isTrafficSignalRecord(record) ||
     isCrosswalkRecord(record)
   )
 }

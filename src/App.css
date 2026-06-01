@@ -200,6 +200,19 @@
   font-weight: 700;
 }
 
+.activity-filter {
+  padding: 10px 0 2px;
+}
+
+.activity-filter .segmented-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.activity-filter button {
+  min-width: 0;
+}
+
 .selected-panel {
   min-height: 220px;
 }
