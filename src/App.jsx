@@ -7,10 +7,12 @@ const ACCIDENT_YEAR_LOOKBACK = 5
 const ACCIDENT_ZONE_RADIUS_METERS = 186
 const MAX_PAGES_PER_DATASET = 300
 const LOCATION_LOOKUP_CONCURRENCY = 8
+const NORMALIZE_CONCURRENCY = 8
 const LATEST_ACCIDENT_YEAR = String(new Date().getFullYear() - 1)
 const DAEJEON_REGION_NAME = '대전광역시'
 const DAEJEON_GU_GUN_CODES = ['110', '140', '170', '200', '230']
 const ACTIVITY_EXCELLENT_DATASET_ID = '15124527'
+const PLAY_FACILITY_DATASET_ID = '15124519'
 const CATEGORY_OPTIONS = [
   {
     id: 'safety',
@@ -20,7 +22,7 @@ const CATEGORY_OPTIONS = [
   {
     id: 'activity',
     label: '아동 활동',
-    datasetIds: ['15007270', '15124527', '15124524', '15124521', '15124519'],
+    datasetIds: ['15007270', '15124527', '15124524', '15124521', PLAY_FACILITY_DATASET_ID],
   },
 ]
 const CLUSTER_STEPS = [10, 50, 100]
@@ -187,7 +189,7 @@ const DATASETS = [
     }),
   },
   {
-    id: '15124519',
+    id: PLAY_FACILITY_DATASET_ID,
     name: '어린이놀이시설',
     group: '어린이놀이시설',
     color: '#00a2c7',
@@ -197,6 +199,7 @@ const DATASETS = [
     query: () => ({
       pageIndex: '1',
       recordCountPerPage: String(DEFAULT_ROWS),
+      rgnNm: DAEJEON_REGION_NAME,
     }),
   },
   {
@@ -400,7 +403,10 @@ function App() {
       ]),
     ),
   )
-  const [selectedCategory, setSelectedCategory] = useState('safety')
+  const [selectedCategories, setSelectedCategories] = useState({
+    safety: true,
+    activity: false,
+  })
   const [selectedRecord, setSelectedRecord] = useState(null)
   const [searchText, setSearchText] = useState('')
   const [searchTarget, setSearchTarget] = useState('')
@@ -415,17 +421,24 @@ function App() {
   const [activityFilter, setActivityFilter] = useState('all')
 
   const activeRecords = useMemo(() => {
-    const category = CATEGORY_OPTIONS.find((option) => option.id === selectedCategory)
-    const datasetIds =
-      selectedCategory === 'activity' && activityFilter === 'excellent'
-        ? new Set([ACTIVITY_EXCELLENT_DATASET_ID])
-        : new Set(category?.datasetIds || [])
+    const datasetIds = new Set()
+
+    CATEGORY_OPTIONS.forEach((category) => {
+      if (!selectedCategories[category.id]) return
+
+      if (category.id === 'activity' && activityFilter === 'excellent') {
+        datasetIds.add(ACTIVITY_EXCELLENT_DATASET_ID)
+        return
+      }
+
+      category.datasetIds.forEach((datasetId) => datasetIds.add(datasetId))
+    })
 
     return DATASETS.flatMap((dataset) => {
       if (!datasetIds.has(dataset.id)) return []
       return results[dataset.id]?.records || []
     })
-  }, [activityFilter, results, selectedCategory])
+  }, [activityFilter, results, selectedCategories])
 
   const categorySummary = useMemo(() => {
     return CATEGORY_OPTIONS.map((category) => ({
@@ -682,59 +695,38 @@ function App() {
       ),
     )
 
-    const settled = await Promise.allSettled(
-      DATASETS.map((dataset) =>
-        fetchDataset(dataset, {
-          serviceKey: dataKey.trim(),
-          accidentYear,
-          geocoder: geocoderRef.current,
-        }),
-      ),
+    const loadOptions = {
+      serviceKey: dataKey.trim(),
+      accidentYear,
+      geocoder: geocoderRef.current,
+    }
+    const loadDataset = async (dataset) => {
+      const [result] = await Promise.allSettled([fetchDataset(dataset, loadOptions)])
+      setResults((current) => ({
+        ...current,
+        [dataset.id]: getDatasetResultState(dataset, result),
+      }))
+    }
+    const playFacilityDataset = DATASETS.find(
+      (dataset) => dataset.id === PLAY_FACILITY_DATASET_ID,
     )
-
-    setResults(
-      Object.fromEntries(
-        DATASETS.map((dataset, index) => {
-          const result = settled[index]
-          if (!dataset.endpoint) {
-            return [
-              dataset.id,
-              {
-                status: 'needs-endpoint',
-                rawCount: 0,
-                mappedCount: 0,
-                records: [],
-                error: '이 데이터셋은 공공데이터포털 Swagger 요청주소 확인 후 DATASETS에 endpoint를 추가해야 합니다.',
-              },
-            ]
-          }
-
-          if (result.status === 'rejected') {
-            return [
-              dataset.id,
-              {
-                status: 'error',
-                rawCount: 0,
-                mappedCount: 0,
-                records: [],
-                error: result.reason?.message || '데이터를 불러오지 못했습니다.',
-              },
-            ]
-          }
-
-          return [
-            dataset.id,
-            {
-              status: 'loaded',
-              rawCount: result.value.rawCount,
-              mappedCount: result.value.records.length,
-              records: result.value.records,
-              error: result.value.notice,
-            },
-          ]
-        }),
-      ),
+    const dependentDatasets = DATASETS.filter(
+      (dataset) => dataset.locationLookup === 'playFacility',
     )
+    const independentDatasets = DATASETS.filter(
+      (dataset) =>
+        dataset.id !== PLAY_FACILITY_DATASET_ID &&
+        dataset.locationLookup !== 'playFacility',
+    )
+    const baseLoad = playFacilityDataset
+      ? loadDataset(playFacilityDataset)
+      : Promise.resolve()
+    const independentLoad = Promise.all(independentDatasets.map(loadDataset))
+
+    await baseLoad
+    await Promise.all(dependentDatasets.map(loadDataset))
+    await independentLoad
+
     setIsLoadingData(false)
   }, [accidentYear, dataKey])
 
@@ -761,8 +753,11 @@ function App() {
     setSearchState({ loading: true, error: '' })
   }
 
-  const selectCategory = (categoryId) => {
-    setSelectedCategory(categoryId)
+  const toggleCategory = (categoryId) => {
+    setSelectedCategories((current) => ({
+      ...current,
+      [categoryId]: !current[categoryId],
+    }))
     setSelectedRecord(null)
   }
 
@@ -804,9 +799,10 @@ function App() {
             <section className="category-tabs" aria-label="정보 분류">
               {categorySummary.map((category) => (
                 <button
-                  className={selectedCategory === category.id ? 'is-active' : ''}
+                  aria-pressed={selectedCategories[category.id]}
+                  className={selectedCategories[category.id] ? 'is-active' : ''}
                   key={category.id}
-                  onClick={() => selectCategory(category.id)}
+                  onClick={() => toggleCategory(category.id)}
                   type="button"
                 >
                   <strong>{category.label}</strong>
@@ -815,7 +811,7 @@ function App() {
               ))}
             </section>
 
-            {selectedCategory === 'activity' ? (
+            {selectedCategories.activity ? (
               <section className="activity-filter" aria-label="아동 활동 필터">
                 <div className="segmented-control">
                   <button
@@ -862,9 +858,7 @@ function App() {
                     {searchLocation?.name || searchTarget || '검색 위치'}
                   </strong>
                   <span>
-                    {selectedCategory === 'safety'
-                      ? '주변 아동 안전 정보를 표시하고 있습니다.'
-                      : '주변 아동 활동 공간을 표시하고 있습니다.'}
+                    {getSelectionMessage(selectedCategories)}
                   </span>
                 </div>
               )}
@@ -890,6 +884,49 @@ function App() {
       ) : null}
     </main>
   )
+}
+
+function getDatasetResultState(dataset, result) {
+  if (!dataset.endpoint) {
+    return {
+      status: 'needs-endpoint',
+      rawCount: 0,
+      mappedCount: 0,
+      records: [],
+      error: '공공데이터포털 API 요청주소 확인 후 endpoint를 추가해야 합니다.',
+    }
+  }
+
+  if (result.status === 'rejected') {
+    return {
+      status: 'error',
+      rawCount: 0,
+      mappedCount: 0,
+      records: [],
+      error: result.reason?.message || '데이터를 불러오지 못했습니다.',
+    }
+  }
+
+  return {
+    status: 'loaded',
+    rawCount: result.value.rawCount,
+    mappedCount: result.value.records.length,
+    records: result.value.records,
+    error: result.value.notice,
+  }
+}
+
+function getSelectionMessage(selectedCategories) {
+  if (selectedCategories.safety && selectedCategories.activity) {
+    return '주변 아동 안전 정보와 아동 활동 공간을 함께 표시하고 있습니다.'
+  }
+  if (selectedCategories.activity) {
+    return '주변 아동 활동 공간을 표시하고 있습니다.'
+  }
+  if (selectedCategories.safety) {
+    return '주변 아동 안전 정보를 표시하고 있습니다.'
+  }
+  return '선택된 정보 분류가 없습니다.'
 }
 
 async function fetchDataset(dataset, options) {
@@ -939,12 +976,17 @@ async function fetchDataset(dataset, options) {
     )
   }
 
-  for (const item of uniqueRecords) {
-    const normalized = await normalizeRecord(item, dataset, {
+  const normalizedRecords = await mapWithConcurrency(
+    uniqueRecords,
+    NORMALIZE_CONCURRENCY,
+    (item) => normalizeRecord(item, dataset, {
       geocoder: options.geocoder,
       serviceKey: options.serviceKey,
       shouldLookup: dataset.locationLookup === 'playFacility',
-    })
+    }),
+  )
+
+  for (const normalized of normalizedRecords) {
     if (normalized) {
       records.push(normalized)
       if (normalized.geocoded) geocoded += 1
@@ -1251,6 +1293,7 @@ async function warmPlayFacilityLocationCache(records, serviceKey, geocoder) {
   const ids = [
     ...new Set(
       records
+        .filter(recordNeedsLocationLookup)
         .map((record) =>
           readAny(flattenObject(record), ['pfctSn', 'PFCT_SN', '놀이시설번호']),
         )
@@ -1278,9 +1321,35 @@ async function warmPlayFacilityLocationCache(records, serviceKey, geocoder) {
   return lookedUp
 }
 
+function recordNeedsLocationLookup(record) {
+  const flat = flattenObject(record)
+  const lat = parseCoordinate(readAny(flat, LAT_KEYS))
+  const lng = parseCoordinate(readAny(flat, LNG_KEYS))
+  return !isKoreanCoordinate(lat, lng)
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  if (!items.length) return []
+
+  const results = new Array(items.length)
+  let cursor = 0
+  const workerCount = Math.min(concurrency, items.length)
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < items.length) {
+      const index = cursor
+      cursor += 1
+      results[index] = await mapper(items[index], index)
+    }
+  })
+
+  await Promise.all(workers)
+  return results
+}
+
 function cachePlayFacilityLocation(record, normalized) {
   const pfctSn = readAny(record, ['pfctSn', 'PFCT_SN', '놀이시설번호'])
-  if (!hasValue(pfctSn) || normalized.datasetId !== '15124519') return
+  if (!hasValue(pfctSn) || normalized.datasetId !== PLAY_FACILITY_DATASET_ID) return
 
   playFacilityLocationCache.set(String(pfctSn), {
     lat: normalized.lat,
