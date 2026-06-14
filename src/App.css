@@ -145,8 +145,7 @@
 
 .primary-action,
 .map-toolbar button,
-.segmented-control button,
-.category-tabs button {
+.segmented-control button {
   min-height: 40px;
   border: 1px solid #c8d3df;
   border-radius: 6px;
@@ -167,50 +166,6 @@
 .primary-action:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.category-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.category-tabs button {
-  display: grid;
-  gap: 4px;
-  min-height: 64px;
-  padding: 10px;
-  background: #f8fafc;
-  text-align: left;
-}
-
-.category-tabs button.is-active {
-  border-color: #2f5fe8;
-  background: #edf3ff;
-  color: #2347b9;
-}
-
-.category-tabs strong {
-  font-size: 14px;
-}
-
-.category-tabs span {
-  color: #607083;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.activity-filter {
-  padding: 10px 0 2px;
-}
-
-.activity-filter .segmented-control {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.activity-filter button {
-  min-width: 0;
 }
 
 .selected-panel {
@@ -432,6 +387,112 @@
   min-height: 100svh;
 }
 
+.map-layer-control {
+  position: absolute;
+  z-index: 30;
+  top: 18px;
+  left: 24px;
+  right: 104px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.map-layer-control__group {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.map-layer-control__actions,
+.map-layer-control__chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  pointer-events: auto;
+}
+
+.map-layer-control__actions {
+  flex: 0 0 auto;
+}
+
+.map-layer-control__chips {
+  flex: 1 1 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.map-layer-control__chips::-webkit-scrollbar {
+  display: none;
+}
+
+.map-layer-control button {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(32, 42, 56, 0.15);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #263244;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: 0 8px 24px rgba(20, 33, 54, 0.15);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+
+.map-layer-control__actions button {
+  min-width: 92px;
+  border-color: rgba(32, 42, 56, 0.18);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.map-layer-control__actions button.is-active {
+  border-color: #2f5fe8;
+  background: #edf3ff;
+  color: #2347b9;
+}
+
+.map-layer-control__chips button {
+  opacity: 0.58;
+}
+
+.map-layer-control__chips button.is-active {
+  border-color: color-mix(in srgb, var(--layer-color) 70%, #ffffff);
+  background: color-mix(in srgb, var(--layer-color) 13%, #ffffff);
+  color: #17202b;
+  opacity: 1;
+}
+
+.map-layer-control strong {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-layer-control button > span:last-child {
+  color: #607083;
+  font-size: 12px;
+}
+
+.layer-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--layer-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--layer-color) 18%, transparent);
+}
+
 .map-toolbar {
   position: absolute;
   z-index: 5;
@@ -475,8 +536,38 @@
 }
 
 .map-canvas {
+  position: relative;
   width: 100%;
   height: 100svh;
+}
+
+.map-dim-canvas,
+.child-zone-glow-canvas,
+.security-light-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.map-dim-canvas {
+  z-index: 1;
+}
+
+.child-zone-glow-canvas {
+  z-index: 2;
+}
+
+.security-light-canvas {
+  z-index: 3;
+}
+
+.map-hover-card.hover-card {
+  position: absolute;
+  z-index: 40;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 14px));
 }
 
 .map-placeholder {
@@ -498,6 +589,8 @@
 }
 
 .hover-card {
+  position: relative;
+  z-index: 10001;
   width: 280px;
   padding: 0;
   border-radius: 8px;
@@ -592,6 +685,23 @@
     right: 10px;
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .map-layer-control {
+    top: 10px;
+    left: 10px;
+    right: 72px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .map-layer-control__group {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .map-layer-control__chips {
+    max-width: 100%;
   }
 }
 

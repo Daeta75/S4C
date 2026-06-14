@@ -1,28 +1,77 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import crimeTimeCsv from './assets/dje_time_crime.csv?raw'
 
 const DAEJEON_CENTER = { lat: 36.3504, lng: 127.3845 }
+const DEFAULT_SEARCH_PLACE = {
+  name: '대전광역시청',
+  address: '대전광역시 서구 둔산로 100',
+  lat: DAEJEON_CENTER.lat,
+  lng: DAEJEON_CENTER.lng,
+}
 const DEFAULT_ROWS = 500
 const ACCIDENT_YEAR_LOOKBACK = 5
 const ACCIDENT_ZONE_RADIUS_METERS = 186
 const MAX_PAGES_PER_DATASET = 300
 const LOCATION_LOOKUP_CONCURRENCY = 8
 const NORMALIZE_CONCURRENCY = 8
+const DATA_CACHE_DB_NAME = 's4c-data-cache'
+const DATA_CACHE_DB_VERSION = 1
+const DATA_CACHE_STORE_NAME = 'datasets'
+const DATA_CACHE_VERSION = '2026-06-14-v2'
+const DATA_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7
 const LATEST_ACCIDENT_YEAR = String(new Date().getFullYear() - 1)
 const DAEJEON_REGION_NAME = '대전광역시'
+const DAEJEON_REGION_CODE = '30'
 const DAEJEON_GU_GUN_CODES = ['110', '140', '170', '200', '230']
+const DAEJEON_COORDINATE_BOUNDS = {
+  south: 36.15,
+  west: 127.2,
+  north: 36.52,
+  east: 127.56,
+}
 const ACTIVITY_EXCELLENT_DATASET_ID = '15124527'
 const PLAY_FACILITY_DATASET_ID = '15124519'
+const TRAFFIC_SIGNAL_DATASET_ID = '15110706'
+const CHILD_PROTECTION_ZONE_DATASET_ID = '15007288'
+const CHILD_PROTECTION_ZONE_DEFAULT_RADIUS_METERS = 300
+const HALF_HOUR_MINUTES = 30
+const DAY_MINUTES = 24 * 60
+const ACTIVITY_RISK_DIM_MIN_OPACITY = 0.018
+const ACTIVITY_RISK_DIM_MAX_OPACITY = 0.22
+const DAY_LIGHT_VISIBILITY = 0.1
+const CRIME_TIME_RANGES = [
+  { key: 'lateNight', label: '심야', startMinutes: 0, endMinutes: 4 * 60 },
+  { key: 'dawn', label: '새벽', startMinutes: 4 * 60, endMinutes: 7 * 60 },
+  { key: 'morning', label: '오전', startMinutes: 7 * 60, endMinutes: 12 * 60 },
+  { key: 'afternoon', label: '오후', startMinutes: 12 * 60, endMinutes: 18 * 60 },
+  { key: 'earlyEvening', label: '초저녁', startMinutes: 18 * 60, endMinutes: 20 * 60 },
+  { key: 'night', label: '밤', startMinutes: 20 * 60, endMinutes: 24 * 60 },
+]
+const ACTIVITY_CRIME_RISK_SLOTS = createActivityCrimeRiskSlots(crimeTimeCsv)
+const ACTIVITY_DATASET_IDS = [
+  '15007270',
+  ACTIVITY_EXCELLENT_DATASET_ID,
+  '15124524',
+  '15124521',
+  PLAY_FACILITY_DATASET_ID,
+]
 const CATEGORY_OPTIONS = [
   {
     id: 'safety',
     label: '아동 안전',
-    datasetIds: ['15058311', '15058925', '15110685', '15110672', '15110706'],
+    datasetIds: [
+      '15058311',
+      '15058925',
+      '15110685',
+      '15110706',
+      CHILD_PROTECTION_ZONE_DATASET_ID,
+    ],
   },
   {
     id: 'activity',
     label: '아동 활동',
-    datasetIds: ['15007270', '15124527', '15124524', '15124521', PLAY_FACILITY_DATASET_ID],
+    datasetIds: ACTIVITY_DATASET_IDS,
   },
 ]
 const CLUSTER_STEPS = [10, 50, 100]
@@ -127,13 +176,13 @@ const DATASETS = [
       })),
   },
   {
-    id: '15110672',
-    name: '대전 횡단보도',
-    group: '도로시설',
-    color: '#46a758',
-    sourceUrl: 'https://www.data.go.kr/data/15110672/openapi.do',
-    endpoint: '/data-api/6300000/GetPdcrListService1/getPdcrList1',
-    description: '횡단보도 위치, 도로명주소, 연장, 폭',
+    id: CHILD_PROTECTION_ZONE_DATASET_ID,
+    name: '대전 어린이보호구역',
+    group: '보호구역',
+    color: '#16a34a',
+    sourceUrl: 'https://www.data.go.kr/data/15007288/openapi.do',
+    endpoint: '/data-api/6300000/kidSafeDaejeonService/kidSafeDaejeonList',
+    description: '시설명, 시설종류, 도로명주소, 관할경찰서, CCTV 설치 여부',
   },
   {
     id: '15007270',
@@ -155,6 +204,7 @@ const DATASETS = [
     query: () => ({
       pageIndex: '1',
       recordCountPerPage: String(DEFAULT_ROWS),
+      rgnCd: DAEJEON_REGION_CODE,
       rgnNm: DAEJEON_REGION_NAME,
     }),
   },
@@ -170,6 +220,7 @@ const DATASETS = [
     query: () => ({
       pageIndex: '1',
       recordCountPerPage: String(DEFAULT_ROWS),
+      rgnCd: DAEJEON_REGION_CODE,
       rgnNm: DAEJEON_REGION_NAME,
     }),
   },
@@ -185,6 +236,7 @@ const DATASETS = [
     query: () => ({
       pageIndex: '1',
       recordCountPerPage: String(DEFAULT_ROWS),
+      rgnCd: DAEJEON_REGION_CODE,
       rgnNm: DAEJEON_REGION_NAME,
     }),
   },
@@ -199,14 +251,15 @@ const DATASETS = [
     query: () => ({
       pageIndex: '1',
       recordCountPerPage: String(DEFAULT_ROWS),
+      rgnCd: DAEJEON_REGION_CODE,
       rgnNm: DAEJEON_REGION_NAME,
     }),
   },
   {
-    id: '15110706',
+    id: TRAFFIC_SIGNAL_DATASET_ID,
     name: '대전 신호등',
     group: '도로시설',
-    color: '#f76b15',
+    color: '#ffffff',
     sourceUrl: 'https://www.data.go.kr/data/15110706/openapi.do',
     endpoint: '/data-api/6300000/GetTrsnListService1/getTrsnList1',
     description: '신호등 위치, 구분, 색 종류, 도로명주소',
@@ -236,14 +289,14 @@ const FIELD_LABELS = {
   ROAD_ROUTE_NO: '노선번호',
   ROAD_ROUTE_NM: '노선명',
   ROADROUTEDRC: '도로방향',
-  CRSLKKND: '횡단보도 종류',
-  BCYCLCRSLKCMBNATYN: '자전거 횡단 겸용',
   HIGHLANDYN: '고원식 여부',
   CARTRKCO: '차로수',
   SGNLLKNND: '신호등 종류',
   managementNumber: '관리번호',
-  ntatcSeq: '공고번호',
+  ntatcSeq: '보호구역 일련번호',
   regDtTm: '등록일',
+  manageCop: '관할경찰서',
+  cctv: 'CCTV 설치 여부',
   zipcode: '우편번호',
   pfctSn: '시설번호',
   pfctNm: '시설명',
@@ -369,9 +422,28 @@ const ADDRESS_KEYS = [
   '소재지지번주소',
   '주소',
 ]
+const RADIUS_KEYS = [
+  'radius',
+  'radiusMeter',
+  'radiusMeters',
+  'range',
+  'rangeMeter',
+  'rangeMeters',
+  'protectionRadius',
+  'protectionRadiusMeter',
+  'zoneRadius',
+  'safeZoneRadius',
+  'rds',
+  '반경',
+  '보호구역반경',
+  '보호구역범위',
+]
 
 function App() {
   const mapContainerRef = useRef(null)
+  const mapDimCanvasRef = useRef(null)
+  const childZoneGlowCanvasRef = useRef(null)
+  const securityLightCanvasRef = useRef(null)
   const mapRef = useRef(null)
   const geocoderRef = useRef(null)
   const clustererRef = useRef(null)
@@ -380,6 +452,7 @@ function App() {
   const infoWindowRef = useRef(null)
   const searchMarkerRef = useRef(null)
   const autoLoadedRef = useRef(false)
+  const fittedDisplayRecordsRef = useRef(null)
 
   const kakaoKey = env.VITE_KAKAO_MAP_APP_KEY || ''
   const dataKey = env.VITE_DATA_GO_KR_SERVICE_KEY || ''
@@ -389,6 +462,7 @@ function App() {
     loading: false,
     error: '',
   })
+  const [mapLevel, setMapLevel] = useState(7)
   const [results, setResults] = useState(() =>
     Object.fromEntries(
       DATASETS.map((dataset) => [
@@ -403,63 +477,74 @@ function App() {
       ]),
     ),
   )
-  const [selectedCategories, setSelectedCategories] = useState({
-    safety: true,
-    activity: false,
-  })
+  const [selectedDatasetLayers, setSelectedDatasetLayers] = useState(() =>
+    Object.fromEntries(DATASETS.map((dataset) => [dataset.id, true])),
+  )
   const [selectedRecord, setSelectedRecord] = useState(null)
-  const [searchText, setSearchText] = useState('')
+  const [hoveredRecord, setHoveredRecord] = useState(null)
+  const [searchText, setSearchText] = useState('대전시청')
   const [searchTarget, setSearchTarget] = useState('')
   const [searchVersion, setSearchVersion] = useState(0)
-  const [searchLocation, setSearchLocation] = useState(null)
-  const [hasSearched, setHasSearched] = useState(false)
+  const [searchLocation, setSearchLocation] = useState(DEFAULT_SEARCH_PLACE)
+  const [hasSearched, setHasSearched] = useState(true)
   const [searchState, setSearchState] = useState({
     loading: false,
     error: '',
   })
   const [isLoadingData, setIsLoadingData] = useState(false)
-  const [activityFilter, setActivityFilter] = useState('all')
+  const [currentCrimeRisk, setCurrentCrimeRisk] = useState(() => getCurrentCrimeRisk())
+  const [nightLightLevel, setNightLightLevel] = useState(() => getNightLightLevel())
 
   const activeRecords = useMemo(() => {
     const datasetIds = new Set()
 
     CATEGORY_OPTIONS.forEach((category) => {
-      if (!selectedCategories[category.id]) return
-
-      if (category.id === 'activity' && activityFilter === 'excellent') {
-        datasetIds.add(ACTIVITY_EXCELLENT_DATASET_ID)
-        return
-      }
-
-      category.datasetIds.forEach((datasetId) => datasetIds.add(datasetId))
+      category.datasetIds.forEach((datasetId) => {
+        if (selectedDatasetLayers[datasetId]) datasetIds.add(datasetId)
+      })
     })
 
     return DATASETS.flatMap((dataset) => {
       if (!datasetIds.has(dataset.id)) return []
-      return results[dataset.id]?.records || []
+      return (results[dataset.id]?.records || []).filter(isDisplayableDaejeonRecord)
     })
-  }, [activityFilter, results, selectedCategories])
+  }, [results, selectedDatasetLayers])
 
-  const categorySummary = useMemo(() => {
-    return CATEGORY_OPTIONS.map((category) => ({
-      ...category,
-      count: category.datasetIds.reduce(
-        (sum, datasetId) => sum + (results[datasetId]?.mappedCount || 0),
-        0,
+  const displayRecords = useMemo(
+    () =>
+      annotateChildProtectionZoneOutlines(
+        mergeOverlappingTrafficSignals(dedupeActivityDisplayRecords(activeRecords)),
       ),
-    }))
-  }, [results])
+    [activeRecords],
+  )
+  const securityLightRecords = useMemo(
+    () => displayRecords.filter(isSecurityLightRecord),
+    [displayRecords],
+  )
+  const childProtectionZoneRecords = useMemo(
+    () => displayRecords.filter(isChildProtectionZoneRecord),
+    [displayRecords],
+  )
 
-  const activitySummary = useMemo(() => {
-    const activityCategory = CATEGORY_OPTIONS.find((option) => option.id === 'activity')
-    return {
-      all: activityCategory?.datasetIds.reduce(
-        (sum, datasetId) => sum + (results[datasetId]?.mappedCount || 0),
-        0,
-      ) || 0,
-      excellent: results[ACTIVITY_EXCELLENT_DATASET_ID]?.mappedCount || 0,
-    }
-  }, [results])
+  const mapDatasetLayerGroups = useMemo(() => {
+    return CATEGORY_OPTIONS.map((category) => {
+      const datasetIdSet = new Set(category.datasetIds)
+      const datasets = DATASETS.filter((dataset) => datasetIdSet.has(dataset.id)).map(
+        (dataset) => ({
+          ...dataset,
+          count: results[dataset.id]?.mappedCount || 0,
+          selected: selectedDatasetLayers[dataset.id] !== false,
+        }),
+      )
+
+      return {
+        id: category.id,
+        label: category.label,
+        datasets,
+        selected: datasets.length > 0 && datasets.every((dataset) => dataset.selected),
+      }
+    })
+  }, [results, selectedDatasetLayers])
 
   const loadKakaoMap = useCallback(() => {
     if (!kakaoKey.trim()) {
@@ -495,22 +580,23 @@ function App() {
           window.kakao.maps.ControlPosition.RIGHT,
         )
         mapRef.current = map
+        setMapLevel(map.getLevel())
         geocoderRef.current = new window.kakao.maps.services.Geocoder()
+        mapDimCanvasRef.current = ensureMapCanvas(
+          mapContainerRef.current,
+          'map-dim-canvas',
+        )
+        childZoneGlowCanvasRef.current = ensureMapCanvas(
+          mapContainerRef.current,
+          'child-zone-glow-canvas',
+        )
+        securityLightCanvasRef.current = ensureSecurityLightCanvas(mapContainerRef.current)
         infoWindowRef.current = new window.kakao.maps.InfoWindow({
           removable: false,
-          zIndex: 10,
+          zIndex: 10000,
         })
 
-        if (window.kakao.maps.MarkerClusterer) {
-          clustererRef.current = new window.kakao.maps.MarkerClusterer({
-            map,
-            averageCenter: true,
-            minLevel: 6,
-            gridSize: 48,
-            calculator: CLUSTER_STEPS,
-            styles: CLUSTER_STYLES,
-          })
-        }
+        clustererRef.current = null
 
         setMapState({ ready: true, loading: false, error: '' })
       })
@@ -549,82 +635,246 @@ function App() {
   useEffect(() => {
     if (!mapState.ready || !mapRef.current) return
 
+    const map = mapRef.current
+    const updateMapLevel = () => setMapLevel(map.getLevel())
+
+    updateMapLevel()
+    window.kakao.maps.event.addListener(map, 'zoom_changed', updateMapLevel)
+
+    return () => {
+      window.kakao.maps.event.removeListener(map, 'zoom_changed', updateMapLevel)
+    }
+  }, [mapState.ready])
+
+  useEffect(() => {
+    const updateTimeBasedVisuals = () => {
+      setCurrentCrimeRisk((current) => {
+        const next = getCurrentCrimeRisk()
+        return current.slotIndex === next.slotIndex ? current : next
+      })
+      setNightLightLevel((current) => {
+        const next = getNightLightLevel()
+        return Math.abs(current - next) < 0.01 ? current : next
+      })
+    }
+
+    updateTimeBasedVisuals()
+    const timerId = window.setInterval(updateTimeBasedVisuals, 60 * 1000)
+
+    return () => window.clearInterval(timerId)
+  }, [])
+
+  useEffect(() => {
+    if (!mapState.ready || !mapRef.current) return
+
+    mapDimCanvasRef.current =
+      mapDimCanvasRef.current || ensureMapCanvas(mapContainerRef.current, 'map-dim-canvas')
+
+    if (!mapDimCanvasRef.current) return
+
+    const canvas = mapDimCanvasRef.current
+    const draw = () => {
+      drawMapDimCanvas(canvas, getGlobalMapDimOpacity(currentCrimeRisk.opacity))
+    }
+
+    draw()
+    window.addEventListener('resize', draw)
+
+    return () => {
+      window.removeEventListener('resize', draw)
+    }
+  }, [currentCrimeRisk.opacity, mapState.ready])
+
+  useEffect(() => {
+    if (!mapState.ready || !mapRef.current) return
+
     markerRefs.current.forEach((marker) => marker.setMap(null))
     markerRefs.current = []
     rangeRefs.current.forEach((overlay) => overlay.setMap(null))
     rangeRefs.current = []
     clustererRef.current?.clear()
     infoWindowRef.current?.close()
+    setHoveredRecord(null)
 
-    if (!activeRecords.length) return
+    if (!displayRecords.length) return
 
     const bounds = new window.kakao.maps.LatLngBounds()
-    const markers = activeRecords.flatMap((record) => {
+    const markers = displayRecords.flatMap((record) => {
       const position = new window.kakao.maps.LatLng(record.lat, record.lng)
-      const rangeOverlays = createRangeOverlays(record, position, mapRef.current)
+      const rangeOverlays = createRangeOverlays(
+        record,
+        position,
+        mapRef.current,
+        nightLightLevel,
+        currentCrimeRisk.intensity,
+      )
       const showRangeInfo = () => {
         rangeOverlays.forEach((overlay) =>
-          overlay.setOptions(getRangeOverlayStyle(record, 'hover')),
+          overlay.setOptions(
+            getOverlayStyle(
+              record,
+              overlay,
+              'hover',
+              nightLightLevel,
+              currentCrimeRisk.intensity,
+            ),
+          ),
         )
+        setHoveredRecord(createMapHoverCardState(record, position, mapRef.current))
       }
       const hideRangeInfo = () => {
         rangeOverlays.forEach((overlay) =>
-          overlay.setOptions(getRangeOverlayStyle(record, 'normal')),
+          overlay.setOptions(
+            getOverlayStyle(
+              record,
+              overlay,
+              'normal',
+              nightLightLevel,
+              currentCrimeRisk.intensity,
+            ),
+          ),
         )
+        infoWindowRef.current?.close()
+        setHoveredRecord(null)
       }
 
       rangeOverlays.forEach((overlay) => {
         window.kakao.maps.event.addListener(overlay, 'mouseover', showRangeInfo)
         window.kakao.maps.event.addListener(overlay, 'mouseout', hideRangeInfo)
-        window.kakao.maps.event.addListener(overlay, 'click', () => {
-          setSelectedRecord(record)
-        })
       })
 
-      bounds.extend(position)
+      extendBoundsForRecord(bounds, record)
       rangeRefs.current.push(...rangeOverlays)
 
       if (isMarkerlessRecord(record)) {
         return []
       }
 
+      if (isActivityRecord(record) && !isActivityStickerVisible(mapLevel)) {
+        return []
+      }
+
       const marker = new window.kakao.maps.Marker({
         position,
         title: record.title,
-        image: createMarkerImage(record.color),
+        image: isActivityRecord(record)
+          ? createActivityStickerMarkerImage(record, mapLevel)
+          : createMarkerImage(record.color),
       })
 
       window.kakao.maps.event.addListener(marker, 'mouseover', () => {
         rangeOverlays.forEach((overlay) =>
-          overlay.setOptions(getRangeOverlayStyle(record, 'hover')),
+          overlay.setOptions(
+            getOverlayStyle(
+              record,
+              overlay,
+              'hover',
+              nightLightLevel,
+              currentCrimeRisk.intensity,
+            ),
+          ),
         )
+        setHoveredRecord(createMapHoverCardState(record, position, mapRef.current))
       })
       window.kakao.maps.event.addListener(marker, 'mouseout', hideRangeInfo)
-      window.kakao.maps.event.addListener(marker, 'click', () => {
-        setSelectedRecord(record)
-      })
 
       return [marker]
     })
 
     markerRefs.current = markers
 
-    if (clustererRef.current) {
-      clustererRef.current.addMarkers(markers)
-    } else {
-      markers.forEach((marker) => marker.setMap(mapRef.current))
-    }
+    markers.forEach((marker) => marker.setMap(mapRef.current))
 
     if (searchLocation) return
+    if (fittedDisplayRecordsRef.current === displayRecords) return
 
-    if (activeRecords.length === 1) {
-      const [record] = activeRecords
+    fittedDisplayRecordsRef.current = displayRecords
+
+    if (displayRecords.length === 1) {
+      const [record] = displayRecords
       mapRef.current.setCenter(new window.kakao.maps.LatLng(record.lat, record.lng))
       mapRef.current.setLevel(4)
     } else {
       mapRef.current.setBounds(bounds)
     }
-  }, [activeRecords, mapState.ready, searchLocation])
+  }, [
+    currentCrimeRisk.intensity,
+    displayRecords,
+    mapLevel,
+    mapState.ready,
+    nightLightLevel,
+    searchLocation,
+  ])
+
+  useEffect(() => {
+    if (!mapState.ready || !mapRef.current) return
+
+    childZoneGlowCanvasRef.current =
+      childZoneGlowCanvasRef.current ||
+      ensureMapCanvas(mapContainerRef.current, 'child-zone-glow-canvas')
+
+    if (!childZoneGlowCanvasRef.current) return
+
+    const map = mapRef.current
+    const canvas = childZoneGlowCanvasRef.current
+    let frameId = 0
+    const draw = () => {
+      window.cancelAnimationFrame(frameId)
+      frameId = window.requestAnimationFrame(() => {
+        drawChildProtectionGlowCanvas(
+          canvas,
+          map,
+          childProtectionZoneRecords,
+          currentCrimeRisk.intensity,
+        )
+      })
+    }
+
+    draw()
+
+    window.kakao.maps.event.addListener(map, 'center_changed', draw)
+    window.kakao.maps.event.addListener(map, 'zoom_changed', draw)
+    window.addEventListener('resize', draw)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.kakao.maps.event.removeListener(map, 'center_changed', draw)
+      window.kakao.maps.event.removeListener(map, 'zoom_changed', draw)
+      window.removeEventListener('resize', draw)
+    }
+  }, [childProtectionZoneRecords, currentCrimeRisk.intensity, mapState.ready])
+
+  useEffect(() => {
+    if (!mapState.ready || !mapRef.current) return
+
+    securityLightCanvasRef.current =
+      securityLightCanvasRef.current || ensureSecurityLightCanvas(mapContainerRef.current)
+
+    if (!securityLightCanvasRef.current) return
+
+    const map = mapRef.current
+    const canvas = securityLightCanvasRef.current
+    let frameId = 0
+    const draw = () => {
+      window.cancelAnimationFrame(frameId)
+      frameId = window.requestAnimationFrame(() => {
+        drawSecurityLightCanvas(canvas, map, securityLightRecords, nightLightLevel)
+      })
+    }
+
+    draw()
+
+    window.kakao.maps.event.addListener(map, 'center_changed', draw)
+    window.kakao.maps.event.addListener(map, 'zoom_changed', draw)
+    window.addEventListener('resize', draw)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.kakao.maps.event.removeListener(map, 'center_changed', draw)
+      window.kakao.maps.event.removeListener(map, 'zoom_changed', draw)
+      window.removeEventListener('resize', draw)
+    }
+  }, [mapState.ready, nightLightLevel, securityLightRecords])
 
   useEffect(() => {
     if (!hasSearched || !searchTarget || !mapState.ready || !mapRef.current) return
@@ -701,7 +951,23 @@ function App() {
       geocoder: geocoderRef.current,
     }
     const loadDataset = async (dataset) => {
+      const cached = await readCachedDataset(dataset, loadOptions)
+      if (cached) {
+        hydratePlayFacilityLocationCache(dataset, cached.records)
+        setResults((current) => ({
+          ...current,
+          [dataset.id]: getDatasetResultState(dataset, {
+            status: 'fulfilled',
+            value: cached,
+          }),
+        }))
+        return
+      }
+
       const [result] = await Promise.allSettled([fetchDataset(dataset, loadOptions)])
+      if (result.status === 'fulfilled') {
+        await writeCachedDataset(dataset, loadOptions, result.value)
+      }
       setResults((current) => ({
         ...current,
         [dataset.id]: getDatasetResultState(dataset, result),
@@ -753,16 +1019,25 @@ function App() {
     setSearchState({ loading: true, error: '' })
   }
 
-  const toggleCategory = (categoryId) => {
-    setSelectedCategories((current) => ({
+  const toggleDatasetLayer = (datasetId) => {
+    setSelectedDatasetLayers((current) => ({
       ...current,
-      [categoryId]: !current[categoryId],
+      [datasetId]: !current[datasetId],
     }))
     setSelectedRecord(null)
   }
 
-  const selectActivityFilter = (filter) => {
-    setActivityFilter(filter)
+  const toggleDatasetGroup = (group) => {
+    setSelectedDatasetLayers((current) => {
+      const next = { ...current }
+      const nextVisible = !group.selected
+
+      group.datasets.forEach((dataset) => {
+        next[dataset.id] = nextVisible
+      })
+
+      return next
+    })
     setSelectedRecord(null)
   }
 
@@ -796,42 +1071,6 @@ function App() {
 
         {hasSearched ? (
           <>
-            <section className="category-tabs" aria-label="정보 분류">
-              {categorySummary.map((category) => (
-                <button
-                  aria-pressed={selectedCategories[category.id]}
-                  className={selectedCategories[category.id] ? 'is-active' : ''}
-                  key={category.id}
-                  onClick={() => toggleCategory(category.id)}
-                  type="button"
-                >
-                  <strong>{category.label}</strong>
-                  <span>{category.count.toLocaleString()}건</span>
-                </button>
-              ))}
-            </section>
-
-            {selectedCategories.activity ? (
-              <section className="activity-filter" aria-label="아동 활동 필터">
-                <div className="segmented-control">
-                  <button
-                    className={activityFilter === 'all' ? 'is-active' : ''}
-                    onClick={() => selectActivityFilter('all')}
-                    type="button"
-                  >
-                    전체 {activitySummary.all.toLocaleString()}
-                  </button>
-                  <button
-                    className={activityFilter === 'excellent' ? 'is-active' : ''}
-                    onClick={() => selectActivityFilter('excellent')}
-                    type="button"
-                  >
-                    우수 시설 {activitySummary.excellent.toLocaleString()}
-                  </button>
-                </div>
-              </section>
-            ) : null}
-
             <section className="selected-panel" aria-label="선택한 정보">
               {selectedRecord ? (
                 <article className="selected-card">
@@ -858,7 +1097,7 @@ function App() {
                     {searchLocation?.name || searchTarget || '검색 위치'}
                   </strong>
                   <span>
-                    {getSelectionMessage(selectedCategories)}
+                    지도 위 필터에서 보고 싶은 안전·활동 자료를 선택하세요.
                   </span>
                 </div>
               )}
@@ -872,6 +1111,46 @@ function App() {
       {hasSearched ? (
         <section className="map-stage" aria-label="카카오맵">
           <div ref={mapContainerRef} className="map-canvas" />
+          {hoveredRecord ? <MapHoverCard hover={hoveredRecord} /> : null}
+          {mapDatasetLayerGroups.length ? (
+            <div className="map-layer-control" aria-label="지도 데이터 레이어">
+              {mapDatasetLayerGroups.map((group) => (
+                <div className="map-layer-control__group" key={group.id}>
+                  <div className="map-layer-control__actions">
+                    <button
+                      aria-pressed={group.selected}
+                      className={group.selected ? 'is-active' : ''}
+                      onClick={() => toggleDatasetGroup(group)}
+                      type="button"
+                      title={
+                        group.selected
+                          ? `${group.label} 전체 해제`
+                          : `${group.label} 전체 보기`
+                      }
+                    >
+                      {group.label}
+                    </button>
+                  </div>
+                  <div className="map-layer-control__chips">
+                    {group.datasets.map((dataset) => (
+                      <button
+                        aria-pressed={dataset.selected}
+                        className={dataset.selected ? 'is-active' : ''}
+                        key={dataset.id}
+                        onClick={() => toggleDatasetLayer(dataset.id)}
+                        style={{ '--layer-color': dataset.color }}
+                        type="button"
+                      >
+                        <span className="layer-dot" />
+                        <strong>{getCompactDatasetName(dataset.name)}</strong>
+                        <span>{dataset.count.toLocaleString()}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {!mapState.ready ? (
             <div className="map-placeholder">
               <strong>
@@ -883,6 +1162,38 @@ function App() {
         </section>
       ) : null}
     </main>
+  )
+}
+
+function MapHoverCard({ hover }) {
+  const record = hover.record
+
+  return (
+    <article
+      className="map-hover-card hover-card"
+      style={{
+        left: `${hover.x}px`,
+        top: `${hover.y}px`,
+        '--tag-color': record.color,
+      }}
+    >
+      <div className="hover-card__head" style={{ borderLeftColor: record.color }}>
+        <span>{record.datasetName}</span>
+        <strong>{record.title}</strong>
+      </div>
+      {record.address ? <p className="hover-card__address">{record.address}</p> : null}
+      {record.details?.length ? (
+        <div className="hover-card__details">
+          {record.details.slice(0, 5).map((detail) => (
+            <div key={`${detail.label}:${detail.value}`}>
+              <span>{detail.label}</span>
+              <strong>{detail.value}</strong>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {record.sourceUrl ? <p className="hover-card__source">{record.sourceUrl}</p> : null}
+    </article>
   )
 }
 
@@ -916,17 +1227,280 @@ function getDatasetResultState(dataset, result) {
   }
 }
 
-function getSelectionMessage(selectedCategories) {
-  if (selectedCategories.safety && selectedCategories.activity) {
-    return '주변 아동 안전 정보와 아동 활동 공간을 함께 표시하고 있습니다.'
+function getDatasetCacheKey(dataset, options) {
+  return [
+    DATA_CACHE_VERSION,
+    dataset.id,
+    options.accidentYear || '',
+  ].join(':')
+}
+
+async function readCachedDataset(dataset, options) {
+  if (!dataset.endpoint) return null
+
+  try {
+    const db = await openDataCacheDb()
+    const entry = await runDataCacheRequest(
+      db
+        .transaction(DATA_CACHE_STORE_NAME, 'readonly')
+        .objectStore(DATA_CACHE_STORE_NAME)
+        .get(getDatasetCacheKey(dataset, options)),
+    )
+
+    if (!entry || Date.now() - entry.cachedAt > DATA_CACHE_TTL_MS) return null
+    return entry.value
+  } catch {
+    return null
   }
-  if (selectedCategories.activity) {
-    return '주변 아동 활동 공간을 표시하고 있습니다.'
+}
+
+async function writeCachedDataset(dataset, options, value) {
+  if (!dataset.endpoint) return
+
+  try {
+    const db = await openDataCacheDb()
+    await runDataCacheRequest(
+      db
+        .transaction(DATA_CACHE_STORE_NAME, 'readwrite')
+        .objectStore(DATA_CACHE_STORE_NAME)
+        .put({
+          id: getDatasetCacheKey(dataset, options),
+          cachedAt: Date.now(),
+          value,
+        }),
+    )
+  } catch {
+    // Cache writes are a performance optimization; API results remain authoritative.
   }
-  if (selectedCategories.safety) {
-    return '주변 아동 안전 정보를 표시하고 있습니다.'
+}
+
+function openDataCacheDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error('IndexedDB unavailable'))
+      return
+    }
+
+    const request = window.indexedDB.open(DATA_CACHE_DB_NAME, DATA_CACHE_DB_VERSION)
+    request.onupgradeneeded = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains(DATA_CACHE_STORE_NAME)) {
+        db.createObjectStore(DATA_CACHE_STORE_NAME, { keyPath: 'id' })
+      }
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+function runDataCacheRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+function getCompactDatasetName(name) {
+  return String(name || '')
+    .replace(/^대전\s*/, '')
+    .replace(/^전국\s*/, '')
+    .replace(/어린이/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function createActivityCrimeRiskSlots(csvText) {
+  const valuesByRange = readActivityCrimeTimeValues(csvText)
+
+  if (!valuesByRange.length) return createFallbackCrimeRiskSlots()
+
+  const sourceValues = valuesByRange.map((range) => range.value)
+  const minValue = Math.min(...sourceValues)
+  const maxValue = Math.max(...sourceValues)
+  const anchors = valuesByRange
+    .map((range) => ({
+      minutes: getCrimeRangeCenterMinutes(range),
+      value: range.value,
+    }))
+    .sort((left, right) => left.minutes - right.minutes)
+
+  return Array.from({ length: DAY_MINUTES / HALF_HOUR_MINUTES }, (_, slotIndex) => {
+    const startMinutes = slotIndex * HALF_HOUR_MINUTES
+    const endMinutes = startMinutes + HALF_HOUR_MINUTES
+    const midpointMinutes = startMinutes + HALF_HOUR_MINUTES / 2
+    const value = interpolateCircularCrimeValue(midpointMinutes, anchors)
+    const intensity = maxValue === minValue ? 0.5 : (value - minValue) / (maxValue - minValue)
+    const opacity = mapCrimeIntensityToOpacity(intensity)
+
+    return {
+      slotIndex,
+      startMinutes,
+      endMinutes,
+      value,
+      intensity,
+      opacity,
+    }
+  })
+}
+
+function readActivityCrimeTimeValues(csvText) {
+  const rows = parseSimpleCsvRows(csvText)
+  if (rows.length < 2) return []
+
+  const [headers, row] = rows
+
+  return CRIME_TIME_RANGES.flatMap((range) => {
+    const headerIndex = headers.findIndex((header) =>
+      normalizeCrimeHeader(header).includes(normalizeCrimeHeader(range.label)),
+    )
+    if (headerIndex < 0) return []
+
+    const value = Number(String(row[headerIndex] || '').replace(/,/g, '').trim())
+    if (!Number.isFinite(value)) return []
+
+    return [
+      {
+        ...range,
+        value,
+      },
+    ]
+  })
+}
+
+function parseSimpleCsvRows(csvText) {
+  return String(csvText || '')
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(parseSimpleCsvLine)
+}
+
+function parseSimpleCsvLine(line) {
+  const cells = []
+  let cell = ''
+  let quoted = false
+
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index]
+    const nextCharacter = line[index + 1]
+
+    if (character === '"' && quoted && nextCharacter === '"') {
+      cell += '"'
+      index += 1
+      continue
+    }
+
+    if (character === '"') {
+      quoted = !quoted
+      continue
+    }
+
+    if (character === ',' && !quoted) {
+      cells.push(cell.trim())
+      cell = ''
+      continue
+    }
+
+    cell += character
   }
-  return '선택된 정보 분류가 없습니다.'
+
+  cells.push(cell.trim())
+  return cells
+}
+
+function normalizeCrimeHeader(value) {
+  return String(value || '').replace(/\s+/g, '')
+}
+
+function getCrimeRangeCenterMinutes(range) {
+  return (range.startMinutes + range.endMinutes) / 2
+}
+
+function interpolateCircularCrimeValue(minutes, anchors) {
+  if (!anchors.length) return 0
+  if (anchors.length === 1) return anchors[0].value
+
+  const extendedAnchors = [
+    {
+      minutes: anchors[anchors.length - 1].minutes - DAY_MINUTES,
+      value: anchors[anchors.length - 1].value,
+    },
+    ...anchors,
+    {
+      minutes: anchors[0].minutes + DAY_MINUTES,
+      value: anchors[0].value,
+    },
+  ]
+
+  for (let index = 0; index < extendedAnchors.length - 1; index += 1) {
+    const current = extendedAnchors[index]
+    const next = extendedAnchors[index + 1]
+
+    if (minutes >= current.minutes && minutes <= next.minutes) {
+      const progress = (minutes - current.minutes) / (next.minutes - current.minutes)
+      return current.value + (next.value - current.value) * progress
+    }
+  }
+
+  return anchors[0].value
+}
+
+function mapCrimeIntensityToOpacity(intensity) {
+  const normalizedIntensity = Math.min(Math.max(intensity, 0), 1)
+  return (
+    ACTIVITY_RISK_DIM_MIN_OPACITY +
+    (ACTIVITY_RISK_DIM_MAX_OPACITY - ACTIVITY_RISK_DIM_MIN_OPACITY) * normalizedIntensity
+  )
+}
+
+function createFallbackCrimeRiskSlots() {
+  const opacity = mapCrimeIntensityToOpacity(0.5)
+
+  return Array.from({ length: DAY_MINUTES / HALF_HOUR_MINUTES }, (_, slotIndex) => {
+    const startMinutes = slotIndex * HALF_HOUR_MINUTES
+    return {
+      slotIndex,
+      startMinutes,
+      endMinutes: startMinutes + HALF_HOUR_MINUTES,
+      value: 0,
+      intensity: 0.5,
+      opacity,
+    }
+  })
+}
+
+function getGlobalMapDimOpacity(crimeOpacity) {
+  return Math.min(0.38, 0.19 + (Number(crimeOpacity) || 0))
+}
+
+function getCurrentCrimeRisk(now = new Date()) {
+  const minutes = now.getHours() * 60 + now.getMinutes()
+  const slotIndex = Math.floor(minutes / HALF_HOUR_MINUTES)
+  return ACTIVITY_CRIME_RISK_SLOTS[slotIndex] || createFallbackCrimeRiskSlots()[slotIndex]
+}
+
+function getNightLightLevel(now = new Date()) {
+  const minutes = now.getHours() * 60 + now.getMinutes()
+  const dawnStart = 5 * 60
+  const dayStart = 8 * 60
+  const duskStart = 17 * 60
+  const nightStart = 20 * 60
+
+  if (minutes < dawnStart || minutes >= nightStart) return 1
+  if (minutes < dayStart) {
+    return lerp(1, DAY_LIGHT_VISIBILITY, (minutes - dawnStart) / (dayStart - dawnStart))
+  }
+  if (minutes < duskStart) return DAY_LIGHT_VISIBILITY
+
+  return lerp(DAY_LIGHT_VISIBILITY, 1, (minutes - duskStart) / (nightStart - duskStart))
+}
+
+function getNightLightRangeScale(level) {
+  return 0.42 + 0.58 * level
+}
+
+function lerp(start, end, amount) {
+  return start + (end - start) * Math.min(Math.max(amount, 0), 1)
 }
 
 async function fetchDataset(dataset, options) {
@@ -1255,6 +1829,7 @@ async function normalizeRecord(item, dataset, context = {}) {
 
   const metrics = getRecordMetrics(flat)
   const rangeRadius = getDataDrivenRadius(dataset, flat)
+  const facilityId = readAny(flat, ['pfctSn', 'PFCT_SN', '놀이시설번호'])
   const title =
     readAny(flat, NAME_KEYS) ||
     address ||
@@ -1270,6 +1845,7 @@ async function normalizeRecord(item, dataset, context = {}) {
     address: address ? String(address) : '',
     lat,
     lng,
+    facilityId: facilityId ? String(facilityId) : '',
     geocoded,
     radius: rangeRadius,
     metrics,
@@ -1362,6 +1938,23 @@ function cachePlayFacilityLocation(record, normalized) {
   })
 }
 
+function hydratePlayFacilityLocationCache(dataset, records) {
+  if (dataset.id !== PLAY_FACILITY_DATASET_ID) return
+
+  records.forEach((record) => {
+    if (!record.facilityId) return
+
+    playFacilityLocationCache.set(String(record.facilityId), {
+      lat: record.lat,
+      lng: record.lng,
+      address: record.address,
+      details: (record.details || []).map((detail) => ({
+        ...detail,
+        label: `湲곕낯?뺣낫 ${detail.label}`,
+      })),
+    })
+  })
+}
 async function lookupPlayFacilityLocation(pfctSn, serviceKey, geocoder) {
   if (!hasValue(pfctSn)) return null
   const cacheKey = String(pfctSn)
@@ -1623,6 +2216,15 @@ function parseArea(value) {
   return Number.isFinite(number) ? number : 0
 }
 
+function parseRadius(value) {
+  if (!hasValue(value)) return 0
+  const source = String(value).replace(/,/g, '').trim()
+  const normalized = source.replace(/[^\d.]/g, '')
+  const number = Number(normalized)
+  if (!Number.isFinite(number) || number <= 0) return 0
+  return /km|킬로/i.test(source) ? number * 1000 : number
+}
+
 function isKoreanCoordinate(lat, lng) {
   return lat >= 33 && lat <= 39.5 && lng >= 124 && lng <= 132
 }
@@ -1648,11 +2250,38 @@ function hasDaejeonRecordText(record, extraText = '') {
   return regionText.includes(DAEJEON_REGION_NAME) || regionText.includes('대전')
 }
 
+function hasExcludedRegionRecordText(record, extraText = '') {
+  const regionText = [
+    extraText,
+    record.rgnNm,
+    record.rgnCdNm,
+    record.RDNMADR,
+    record.LNMADR,
+    record.rdnmadr,
+    record.lnmadr,
+    record.ronaAddr,
+    record.lotnoAddr,
+    record.address,
+    record.addr,
+    record.adres,
+    record.CTPRVNNM,
+    record.sido_sgg_nm,
+  ]
+    .filter(hasValue)
+    .join(' ')
+
+  return regionText.includes('세종')
+}
+
 function isDaejeonRegionCode(value) {
   return hasValue(value) && String(value).trim().startsWith('30')
 }
 
 function isDaejeonRecord(record, lat, lng) {
+  if (hasExcludedRegionRecordText(record)) {
+    return false
+  }
+
   if (
     hasDaejeonRecordText(record) ||
     isDaejeonRegionCode(record.rgnCd) ||
@@ -1661,14 +2290,391 @@ function isDaejeonRecord(record, lat, lng) {
     return true
   }
 
-  return lat >= 36.0 && lat <= 36.7 && lng >= 126.95 && lng <= 127.75
+  return isWithinDaejeonCoordinateBounds(lat, lng)
+}
+
+function isDisplayableDaejeonRecord(record) {
+  return isDaejeonRecord(record, record.lat, record.lng)
+}
+
+function isWithinDaejeonCoordinateBounds(lat, lng) {
+  return (
+    lat >= DAEJEON_COORDINATE_BOUNDS.south &&
+    lat <= DAEJEON_COORDINATE_BOUNDS.north &&
+    lng >= DAEJEON_COORDINATE_BOUNDS.west &&
+    lng <= DAEJEON_COORDINATE_BOUNDS.east
+  )
+}
+
+function mergeOverlappingTrafficSignals(records) {
+  const trafficSignals = records.filter(isTrafficSignalRecord)
+  if (trafficSignals.length < 2) return records
+
+  const prepared = trafficSignals.map((record) => ({
+    record,
+    ...latLngToMeters(record.lat, record.lng),
+    radius: getRecordRadius(record),
+  }))
+  const maxRadius = Math.max(...prepared.map((item) => item.radius))
+  const cellSize = Math.max(maxRadius * 2, 32)
+  const parent = prepared.map((_, index) => index)
+  const signalIndex = new Map(prepared.map((item, index) => [item.record, index]))
+  const grid = new Map()
+
+  const find = (index) => {
+    while (parent[index] !== index) {
+      parent[index] = parent[parent[index]]
+      index = parent[index]
+    }
+    return index
+  }
+  const union = (left, right) => {
+    const leftRoot = find(left)
+    const rightRoot = find(right)
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot
+  }
+
+  prepared.forEach((item, index) => {
+    const cellX = Math.floor(item.x / cellSize)
+    const cellY = Math.floor(item.y / cellSize)
+    const range = Math.ceil((item.radius + maxRadius) / cellSize)
+
+    for (let x = cellX - range; x <= cellX + range; x += 1) {
+      for (let y = cellY - range; y <= cellY + range; y += 1) {
+        const nearby = grid.get(`${x}:${y}`) || []
+        nearby.forEach((nearbyIndex) => {
+          if (circlesOverlap(item, prepared[nearbyIndex])) {
+            union(index, nearbyIndex)
+          }
+        })
+      }
+    }
+
+    const key = `${cellX}:${cellY}`
+    grid.set(key, [...(grid.get(key) || []), index])
+  })
+
+  const groups = new Map()
+  prepared.forEach((_, index) => {
+    const root = find(index)
+    groups.set(root, [...(groups.get(root) || []), index])
+  })
+
+  const emitted = new Set()
+  return records.flatMap((record) => {
+    if (!isTrafficSignalRecord(record)) return [record]
+
+    const index = signalIndex.get(record)
+    const root = find(index)
+    if (emitted.has(root)) return []
+    emitted.add(root)
+
+    const group = groups.get(root) || [index]
+    if (group.length === 1) return [record]
+    return [createMergedTrafficSignalRecord(group.map((itemIndex) => prepared[itemIndex]))]
+  })
+}
+
+function annotateChildProtectionZoneOutlines(records) {
+  const zones = records.filter(isChildProtectionZoneRecord)
+  if (zones.length < 2) return records
+
+  const prepared = zones.map((record) => ({
+    record,
+    ...latLngToMeters(record.lat, record.lng),
+    radius: getRecordRadius(record),
+  }))
+  const maxRadius = Math.max(...prepared.map((item) => item.radius))
+  const cellSize = Math.max(maxRadius * 2, 120)
+  const parent = prepared.map((_, index) => index)
+  const grid = new Map()
+
+  const find = (index) => {
+    while (parent[index] !== index) {
+      parent[index] = parent[parent[index]]
+      index = parent[index]
+    }
+    return index
+  }
+  const union = (left, right) => {
+    const leftRoot = find(left)
+    const rightRoot = find(right)
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot
+  }
+
+  prepared.forEach((item, index) => {
+    const cellX = Math.floor(item.x / cellSize)
+    const cellY = Math.floor(item.y / cellSize)
+    const range = Math.ceil((item.radius + maxRadius) / cellSize)
+
+    for (let x = cellX - range; x <= cellX + range; x += 1) {
+      for (let y = cellY - range; y <= cellY + range; y += 1) {
+        const nearby = grid.get(`${x}:${y}`) || []
+        nearby.forEach((nearbyIndex) => {
+          if (circlesOverlap(item, prepared[nearbyIndex])) {
+            union(index, nearbyIndex)
+          }
+        })
+      }
+    }
+
+    const key = `${cellX}:${cellY}`
+    grid.set(key, [...(grid.get(key) || []), index])
+  })
+
+  const groups = new Map()
+  prepared.forEach((_, index) => {
+    const root = find(index)
+    groups.set(root, [...(groups.get(root) || []), index])
+  })
+
+  const zoneIndex = new Map(prepared.map((item, index) => [item.record, index]))
+
+  return records.map((record) => {
+    if (!isChildProtectionZoneRecord(record)) return record
+
+    const index = zoneIndex.get(record)
+    if (index === undefined) return record
+    const root = find(index)
+    const group = groups.get(root) || [index]
+    if (group.length === 1) return record
+
+    return createAnnotatedChildProtectionZoneRecord(
+      prepared[index],
+      group.map((itemIndex) => prepared[itemIndex]),
+    )
+  })
+}
+
+function dedupeActivityDisplayRecords(records) {
+  const groups = new Map()
+
+  records.forEach((record) => {
+    const key = getActivityDisplayKey(record)
+    if (!key) return
+    groups.set(key, [...(groups.get(key) || []), record])
+  })
+
+  const emitted = new Set()
+  return records.flatMap((record) => {
+    const key = getActivityDisplayKey(record)
+    if (!key) return [record]
+    if (emitted.has(key)) return []
+
+    emitted.add(key)
+    const group = groups.get(key) || [record]
+    return [mergeActivityDisplayGroup(group)]
+  })
+}
+
+function getActivityDisplayKey(record) {
+  if (!isActivityRecord(record)) return ''
+  if (record.facilityId) return `facility:${record.facilityId}`
+
+  const title = normalizeDisplayText(record.title)
+  const address = normalizeDisplayText(record.address)
+  if (title && address) return `title-address:${title}:${address}`
+  if (title) return `title-point:${title}:${getDisplayPointKey(record)}`
+  if (address) return `address:${address}`
+
+  return `point:${getDisplayPointKey(record)}`
+}
+
+function mergeActivityDisplayGroup(records) {
+  if (records.length === 1) return records[0]
+
+  const primary =
+    records.find((record) => record.datasetId === PLAY_FACILITY_DATASET_ID) ||
+    records.find((record) => record.datasetId === ACTIVITY_EXCELLENT_DATASET_ID) ||
+    records[0]
+  const radius = Math.max(...records.map((record) => getRecordRadius(record)))
+  const datasetNames = [...new Set(records.map((record) => record.datasetName))]
+  const mergedDetails = mergeDetails(
+    [
+      { label: '표시 병합', value: `${records.length.toLocaleString()}개 자료` },
+      { label: '포함 자료', value: datasetNames.join(', ') },
+    ],
+    records.flatMap((record) => record.details || []),
+  )
+
+  return {
+    ...primary,
+    radius,
+    details: mergedDetails,
+  }
+}
+
+function normalizeDisplayText(value) {
+  return hasValue(value) ? String(value).replace(/\s+/g, '').trim().toLowerCase() : ''
+}
+
+function getDisplayPointKey(record) {
+  return `${Math.round(record.lat * 10000)}:${Math.round(record.lng * 10000)}`
+}
+
+function createMergedTrafficSignalRecord(items) {
+  const centerX = items.reduce((sum, item) => sum + item.x, 0) / items.length
+  const centerY = items.reduce((sum, item) => sum + item.y, 0) / items.length
+  const center = metersToLatLng(centerX, centerY)
+  const baseRecord = items[0].record
+  const radius = getRecordRadius(baseRecord)
+  const countLabel = items.length.toLocaleString()
+
+  return {
+    ...baseRecord,
+    lat: center.lat,
+    lng: center.lng,
+    radius,
+    title: `${baseRecord.datasetName} ${countLabel}개 묶음`,
+    address: '',
+    details: [
+      { label: '묶은 신호등', value: `${countLabel}개` },
+      { label: '표시반경', value: `${Math.round(radius).toLocaleString()}m` },
+    ],
+  }
+}
+
+function createAnnotatedChildProtectionZoneRecord(item, groupItems) {
+  return {
+    ...item.record,
+    displayShape: 'child-zone-outline',
+    childZoneGroupSize: groupItems.length,
+    childZoneCircle: {
+      lat: item.record.lat,
+      lng: item.record.lng,
+      radius: item.radius,
+    },
+    outlineSegments: createCircleUnionOutlineSegments(item, groupItems),
+  }
+}
+
+function createCircleUnionOutlineSegments(item, items) {
+  const segmentCount = 144
+
+  const visibleSegments = Array.from({ length: segmentCount }, (_, index) => {
+    const angle = (Math.PI * 2 * (index + 0.5)) / segmentCount
+    const midpoint = {
+      x: item.x + Math.cos(angle) * item.radius,
+      y: item.y + Math.sin(angle) * item.radius,
+    }
+
+    return !items.some(
+      (other) =>
+        other !== item &&
+        Math.hypot(midpoint.x - other.x, midpoint.y - other.y) < other.radius - 0.5,
+    )
+  })
+
+  if (visibleSegments.every(Boolean)) {
+    return [
+      Array.from({ length: segmentCount + 1 }, (_, index) =>
+        circlePointToLatLng(item, index % segmentCount, segmentCount),
+      ),
+    ]
+  }
+
+  const firstHiddenIndex = visibleSegments.findIndex((visible) => !visible)
+  const paths = []
+  let currentPath = null
+
+  for (let offset = 1; offset <= segmentCount; offset += 1) {
+    const index = (firstHiddenIndex + offset) % segmentCount
+    const visible = visibleSegments[index]
+
+    if (visible && !currentPath) {
+      currentPath = [circlePointToLatLng(item, index, segmentCount)]
+    }
+
+    if (visible && currentPath) {
+      currentPath.push(circlePointToLatLng(item, index + 1, segmentCount))
+    }
+
+    if (!visible && currentPath) {
+      if (currentPath.length >= 2) paths.push(currentPath)
+      currentPath = null
+    }
+  }
+
+  if (currentPath?.length >= 2) paths.push(currentPath)
+  return paths
+}
+
+function circlePointToLatLng(item, index, segmentCount) {
+  const angle = (Math.PI * 2 * index) / segmentCount
+  return metersToLatLng(
+    item.x + Math.cos(angle) * item.radius,
+    item.y + Math.sin(angle) * item.radius,
+  )
+}
+
+function latLngToMeters(lat, lng) {
+  const metersPerLat = 111_320
+  const metersPerLng = metersPerLat * Math.cos((DAEJEON_CENTER.lat * Math.PI) / 180)
+
+  return {
+    x: (lng - DAEJEON_CENTER.lng) * metersPerLng,
+    y: (lat - DAEJEON_CENTER.lat) * metersPerLat,
+  }
+}
+
+function metersToLatLng(x, y) {
+  const metersPerLat = 111_320
+  const metersPerLng = metersPerLat * Math.cos((DAEJEON_CENTER.lat * Math.PI) / 180)
+
+  return {
+    lat: DAEJEON_CENTER.lat + y / metersPerLat,
+    lng: DAEJEON_CENTER.lng + x / metersPerLng,
+  }
+}
+
+function circlesOverlap(left, right) {
+  return Math.hypot(left.x - right.x, left.y - right.y) <= left.radius + right.radius
+}
+
+function extendBoundsForRecord(bounds, record) {
+  if (hasChildZoneUnionShape(record)) {
+    const circle = record.childZoneCircle
+    const center = new window.kakao.maps.LatLng(circle.lat, circle.lng)
+    bounds.extend(center)
+    record.outlineSegments.forEach((segment) =>
+      segment.forEach((point) =>
+        bounds.extend(new window.kakao.maps.LatLng(point.lat, point.lng)),
+      ),
+    )
+    return
+  }
+
+  bounds.extend(new window.kakao.maps.LatLng(record.lat, record.lng))
+
+  const radius = getVisualRecordRadius(record)
+  if (!radius) return
+
+  const metersPerLat = 111_320
+  const metersPerLng = metersPerLat * Math.cos((record.lat * Math.PI) / 180)
+  const latOffset = radius / metersPerLat
+  const lngOffset = radius / metersPerLng
+
+  bounds.extend(new window.kakao.maps.LatLng(record.lat + latOffset, record.lng + lngOffset))
+  bounds.extend(new window.kakao.maps.LatLng(record.lat - latOffset, record.lng - lngOffset))
+}
+
+function getVisualRecordRadius(record) {
+  const radius = getRecordRadius(record)
+  if (isAccidentZoneRecord(record)) return radius * 1.14
+  if (isChildProtectionZoneRecord(record)) return radius * 1.08
+  return radius
+}
+
+function getRangeOverlayRadius(record) {
+  if (isChildProtectionZoneRecord(record)) return getRecordRadius(record)
+  return isAccidentZoneRecord(record) ? getRecordRadius(record) : getVisualRecordRadius(record)
 }
 
 function getRecordRadius(record) {
   if (record.radius) return record.radius
   if (isSecurityLightRecord(record)) return 6
-  if (isTrafficSignalRecord(record)) return 13.5
-  if (isCrosswalkRecord(record)) return 22.5
+  if (isTrafficSignalRecord(record)) return 18
+  if (isChildProtectionZoneRecord(record)) return CHILD_PROTECTION_ZONE_DEFAULT_RADIUS_METERS
   if (record.group === '도로시설') return 45
   if (record.group === '어린이놀이시설') return 70
   return 90
@@ -1678,12 +2684,20 @@ function isSecurityLightRecord(record) {
   return record.datasetId === '15110685'
 }
 
-function isCrosswalkRecord(record) {
-  return record.datasetId === '15110672'
+function isTrafficSignalRecord(record) {
+  return record.datasetId === TRAFFIC_SIGNAL_DATASET_ID
 }
 
-function isTrafficSignalRecord(record) {
-  return record.datasetId === '15110706'
+function isChildProtectionZoneRecord(record) {
+  return record.datasetId === CHILD_PROTECTION_ZONE_DATASET_ID
+}
+
+function isActivityRecord(record) {
+  return ACTIVITY_DATASET_IDS.includes(record.datasetId)
+}
+
+function isParkRecord(record) {
+  return record.datasetId === '15007270'
 }
 
 function isAccidentZoneRecord(record) {
@@ -1693,14 +2707,19 @@ function isAccidentZoneRecord(record) {
 function isMarkerlessRecord(record) {
   return (
     isAccidentZoneRecord(record) ||
+    isChildProtectionZoneRecord(record) ||
+    isParkRecord(record) ||
     isSecurityLightRecord(record) ||
-    isTrafficSignalRecord(record) ||
-    isCrosswalkRecord(record)
+    isTrafficSignalRecord(record)
   )
 }
 
 function getDataDrivenRadius(dataset, record) {
   if (dataset.useLatestAvailableAccidentYear) return ACCIDENT_ZONE_RADIUS_METERS
+
+  if (dataset.id === CHILD_PROTECTION_ZONE_DATASET_ID) {
+    return parseRadius(readAny(record, RADIUS_KEYS)) || CHILD_PROTECTION_ZONE_DEFAULT_RADIUS_METERS
+  }
 
   if (dataset.id === '15007270') {
     return areaToDisplayRadius(readAny(record, ['parkArea', 'park_area']))
@@ -1717,7 +2736,16 @@ function areaToDisplayRadius(areaValue) {
   return Math.min(Math.max(equivalentRadius, 30), 600)
 }
 
-function createRangeOverlays(record, position, map) {
+function createRangeOverlays(
+  record,
+  position,
+  map,
+  nightLightLevel = 1,
+  crimeVisualLevel = 1,
+) {
+  if (isSecurityLightRecord(record)) return []
+  if (isActivityRecord(record) && !isParkRecord(record)) return []
+
   const style = getRangeOverlayStyle(record, 'normal')
   const baseOptions = {
     map,
@@ -1726,26 +2754,581 @@ function createRangeOverlays(record, position, map) {
     zIndex: 1,
     ...style,
   }
+  const overlays = []
+
+  if (hasChildZoneUnionShape(record)) {
+    const circle = record.childZoneCircle
+    const center = new window.kakao.maps.LatLng(circle.lat, circle.lng)
+    const fillOverlay = new window.kakao.maps.Circle({
+      map,
+      center,
+      radius: circle.radius,
+      ...getChildProtectionFillOverlayStyle('normal'),
+    })
+    fillOverlay.overlayRole = 'child-zone-fill'
+    overlays.push(fillOverlay)
+
+    record.outlineSegments.forEach((segment) => {
+      const outlineOverlay = new window.kakao.maps.Polyline({
+        map,
+        path: createKakaoLinePath(segment),
+        ...getChildProtectionOutlineOverlayStyle('normal'),
+      })
+      outlineOverlay.overlayRole = 'child-zone-outline'
+      overlays.push(outlineOverlay)
+    })
+
+    return overlays
+  }
+
+  if (isTrafficSignalRecord(record)) {
+    const signalHalfSize =
+      getRangeOverlayRadius(record) * getNightLightRangeScale(nightLightLevel)
+    const signalOverlay = new window.kakao.maps.Polygon({
+      map,
+      path: createMeterSquarePath(record.lat, record.lng, signalHalfSize),
+      ...getRangeOverlayStyle(record, 'normal', nightLightLevel),
+    })
+    signalOverlay.overlayRole = 'range'
+    overlays.push(signalOverlay)
+
+    return overlays
+  }
+
+  if (usesSafetyLightOverlay(record)) {
+    const lightOverlay = new window.kakao.maps.Circle({
+      map,
+      center: position,
+      radius: getVisualRecordRadius(record) * 1.28,
+      ...getSafetyLightOverlayStyle('normal'),
+    })
+    lightOverlay.overlayRole = 'safety-light'
+    overlays.push(lightOverlay)
+  }
+
+  const rangeOverlay = new window.kakao.maps.Circle({
+    ...baseOptions,
+    center: position,
+    radius: getRangeOverlayRadius(record),
+  })
+  rangeOverlay.overlayRole = 'range'
+  overlays.push(rangeOverlay)
+
+  if (isAccidentZoneRecord(record)) {
+    const darkOverlay = new window.kakao.maps.Circle({
+      map,
+      center: position,
+      radius: getVisualRecordRadius(record),
+      ...getAccidentDarkOverlayStyle('normal', crimeVisualLevel),
+    })
+    darkOverlay.overlayRole = 'accident-dark'
+    overlays.push(darkOverlay)
+  }
+
+  return overlays
+}
+
+function createMeterSquarePath(lat, lng, halfSizeMeters) {
+  const metersPerLat = 111_320
+  const metersPerLng = metersPerLat * Math.cos((lat * Math.PI) / 180)
+  const latOffset = halfSizeMeters / metersPerLat
+  const lngOffset = halfSizeMeters / metersPerLng
 
   return [
-    new window.kakao.maps.Circle({
-      ...baseOptions,
-      center: position,
-      radius: getRecordRadius(record),
-    }),
+    new window.kakao.maps.LatLng(lat - latOffset, lng - lngOffset),
+    new window.kakao.maps.LatLng(lat - latOffset, lng + lngOffset),
+    new window.kakao.maps.LatLng(lat + latOffset, lng + lngOffset),
+    new window.kakao.maps.LatLng(lat + latOffset, lng - lngOffset),
   ]
 }
 
-function getRangeOverlayStyle(record, state) {
+function hasChildZoneUnionShape(record) {
+  return (
+    record.displayShape === 'child-zone-outline' &&
+    record.childZoneCircle &&
+    Array.isArray(record.outlineSegments)
+  )
+}
+
+function createKakaoLinePath(path) {
+  return path.map((point) => new window.kakao.maps.LatLng(point.lat, point.lng))
+}
+
+function getOverlayStyle(
+  record,
+  overlay,
+  state,
+  nightLightLevel = 1,
+  crimeVisualLevel = 1,
+) {
+  if (overlay.overlayRole === 'child-zone-fill') {
+    return getChildProtectionFillOverlayStyle(state)
+  }
+  if (overlay.overlayRole === 'child-zone-outline') {
+    return getChildProtectionOutlineOverlayStyle(state)
+  }
+  if (overlay.overlayRole === 'safety-light') return getSafetyLightOverlayStyle(state)
+  if (overlay.overlayRole === 'accident-dark') {
+    return getAccidentDarkOverlayStyle(state, crimeVisualLevel)
+  }
+  return getRangeOverlayStyle(record, state, nightLightLevel)
+}
+
+function ensureMapCanvas(container, className) {
+  if (!container) return null
+
+  const host = getKakaoMapCanvasHost(container)
+  const existingCanvas = container.querySelector(`.${className}`)
+  if (existingCanvas) {
+    if (existingCanvas.parentElement !== host) {
+      host.appendChild(existingCanvas)
+    }
+    return existingCanvas
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.className = className
+  canvas.setAttribute('aria-hidden', 'true')
+  host.appendChild(canvas)
+  return canvas
+}
+
+function getKakaoMapCanvasHost(container) {
+  return (
+    Array.from(container.children).find(
+      (child) => child instanceof HTMLElement && child.tagName === 'DIV',
+    ) || container
+  )
+}
+
+function ensureSecurityLightCanvas(container) {
+  return ensureMapCanvas(container, 'security-light-canvas')
+}
+
+function drawMapDimCanvas(canvas, opacity) {
+  const rect = canvas.getBoundingClientRect()
+  const width = Math.round(rect.width)
+  const height = Math.round(rect.height)
+  const dpr = window.devicePixelRatio || 1
+  const scaledWidth = Math.max(1, Math.round(width * dpr))
+  const scaledHeight = Math.max(1, Math.round(height * dpr))
+
+  if (canvas.width !== scaledWidth || canvas.height !== scaledHeight) {
+    canvas.width = scaledWidth
+    canvas.height = scaledHeight
+  }
+
+  const context = canvas.getContext('2d')
+  if (!context) return
+
+  context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  context.clearRect(0, 0, width, height)
+  context.globalAlpha = Math.min(Math.max(opacity, 0), 0.6)
+  context.fillStyle = '#020304'
+  context.fillRect(0, 0, width, height)
+  context.globalAlpha = 1
+}
+
+function drawChildProtectionGlowCanvas(canvas, map, records, crimeVisualLevel = 1) {
+  const rect = canvas.getBoundingClientRect()
+  const width = Math.round(rect.width)
+  const height = Math.round(rect.height)
+  const dpr = window.devicePixelRatio || 1
+  const scaledWidth = Math.max(1, Math.round(width * dpr))
+  const scaledHeight = Math.max(1, Math.round(height * dpr))
+
+  if (canvas.width !== scaledWidth || canvas.height !== scaledHeight) {
+    canvas.width = scaledWidth
+    canvas.height = scaledHeight
+  }
+
+  const context = canvas.getContext('2d')
+  if (!context) return
+
+  context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  context.clearRect(0, 0, width, height)
+  if (!records.length || !width || !height) return
+
+  const glowLevel = getCrimeVisualLevel(crimeVisualLevel)
+  if (glowLevel <= 0) return
+
+  const maskCanvas = document.createElement('canvas')
+  maskCanvas.width = scaledWidth
+  maskCanvas.height = scaledHeight
+  const maskContext = maskCanvas.getContext('2d')
+  if (!maskContext) return
+
+  maskContext.setTransform(dpr, 0, 0, dpr, 0, 0)
+  maskContext.fillStyle = '#ffffff'
+
+  const projection = map.getProjection()
+  records.forEach((record) => {
+    const circle = getChildProtectionGlowCircle(record)
+    const center = projection.containerPointFromCoords(
+      new window.kakao.maps.LatLng(circle.lat, circle.lng),
+    )
+    const radius = metersToContainerPixels(map, circle.lat, circle.lng, circle.radius)
+
+    if (
+      center.x < -radius ||
+      center.y < -radius ||
+      center.x > width + radius ||
+      center.y > height + radius
+    ) {
+      return
+    }
+
+    maskContext.beginPath()
+    maskContext.arc(center.x, center.y, radius, 0, Math.PI * 2)
+    maskContext.fill()
+  })
+
+  context.save()
+  context.globalAlpha = 0.34 * glowLevel
+  context.fillStyle = '#fff2b3'
+  context.fillRect(0, 0, width, height)
+  context.globalAlpha = 1
+  context.globalCompositeOperation = 'destination-in'
+  context.drawImage(maskCanvas, 0, 0, width, height)
+  context.restore()
+}
+
+function getChildProtectionGlowCircle(record) {
+  const source = record.childZoneCircle || record
+  return {
+    lat: source.lat,
+    lng: source.lng,
+    radius: getVisualRecordRadius(record) * 1.28,
+  }
+}
+
+function metersToContainerPixels(map, lat, lng, meters) {
+  const projection = map.getProjection()
+  const centerPoint = projection.containerPointFromCoords(
+    new window.kakao.maps.LatLng(lat, lng),
+  )
+  const metersPerLat = 111_320
+  const metersPerLng = metersPerLat * Math.cos((lat * Math.PI) / 180)
+  const edgePoint = projection.containerPointFromCoords(
+    new window.kakao.maps.LatLng(lat, lng + meters / metersPerLng),
+  )
+
+  return Math.abs(edgePoint.x - centerPoint.x)
+}
+
+function drawSecurityLightCanvas(canvas, map, records, nightLightLevel = 1) {
+  const rect = canvas.getBoundingClientRect()
+  const width = Math.round(rect.width)
+  const height = Math.round(rect.height)
+  const dpr = window.devicePixelRatio || 1
+  const scaledWidth = Math.max(1, Math.round(width * dpr))
+  const scaledHeight = Math.max(1, Math.round(height * dpr))
+
+  if (canvas.width !== scaledWidth || canvas.height !== scaledHeight) {
+    canvas.width = scaledWidth
+    canvas.height = scaledHeight
+  }
+
+  const context = canvas.getContext('2d')
+  if (!context) return
+
+  context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  context.clearRect(0, 0, width, height)
+  if (!records.length || !width || !height) return
+
+  const projection = map.getProjection()
+  const pointStyle = getSecurityLightCanvasPointStyle(map.getLevel(), nightLightLevel)
+  records.forEach((record) => {
+    const point = projection.containerPointFromCoords(
+      new window.kakao.maps.LatLng(record.lat, record.lng),
+    )
+    const x = point.x
+    const y = point.y
+
+    if (
+      x < -pointStyle.outerRadius ||
+      y < -pointStyle.outerRadius ||
+      x > width + pointStyle.outerRadius ||
+      y > height + pointStyle.outerRadius
+    ) {
+      return
+    }
+
+    context.beginPath()
+    context.fillStyle = `rgba(255, 216, 77, ${pointStyle.outerOpacity})`
+    context.arc(x, y, pointStyle.outerRadius, 0, Math.PI * 2)
+    context.fill()
+
+    context.beginPath()
+    context.fillStyle = `rgba(255, 216, 77, ${pointStyle.middleOpacity})`
+    context.arc(x, y, pointStyle.middleRadius, 0, Math.PI * 2)
+    context.fill()
+
+    context.beginPath()
+    context.fillStyle = `rgba(255, 216, 77, ${pointStyle.innerOpacity})`
+    context.strokeStyle = `rgba(255, 255, 255, ${pointStyle.strokeOpacity})`
+    context.lineWidth = pointStyle.strokeWidth
+    context.arc(x, y, pointStyle.innerRadius, 0, Math.PI * 2)
+    context.fill()
+    if (pointStyle.strokeWidth > 0) context.stroke()
+  })
+}
+
+function getSecurityLightCanvasPointStyle(mapLevel, nightLightLevel = 1) {
+  const zoomOutSteps = Math.max(0, mapLevel - 5)
+  const zoomInSteps = Math.max(0, 5 - mapLevel)
+  const scale = Math.max(0.14, 1 - zoomOutSteps * 0.2)
+  const lightLevel = Math.min(Math.max(nightLightLevel, DAY_LIGHT_VISIBILITY), 1)
+  const rangeScale = getNightLightRangeScale(lightLevel)
+  const zoomInOpacityScale = Math.max(0.58, 1 - zoomInSteps * 0.14)
+
+  return {
+    innerRadius: Math.max(0.35, 2.2 * scale * rangeScale),
+    middleRadius: Math.max(0.5, 3 * scale * rangeScale),
+    outerRadius: Math.max(0.75, 5 * scale * rangeScale),
+    outerOpacity: 0.13 * scale * lightLevel * zoomInOpacityScale,
+    middleOpacity: 0.36 * scale * lightLevel * zoomInOpacityScale,
+    innerOpacity: 0.65 * lightLevel * zoomInOpacityScale,
+    strokeOpacity: 0.62 * lightLevel * zoomInOpacityScale,
+    strokeWidth: scale > 0.5 ? 1 : 0,
+  }
+}
+
+function createMapHoverCardState(record, position, map) {
+  const point = map.getProjection().containerPointFromCoords(position)
+
+  return {
+    record,
+    x: point.x,
+    y: point.y,
+  }
+}
+
+function showRecordInfoWindow(record, position, infoWindow, map) {
+  if (!infoWindow || !map) return
+
+  infoWindow.setContent(createHoverCardContent(record))
+  infoWindow.setPosition(position)
+  if (typeof infoWindow.setZIndex === 'function') {
+    infoWindow.setZIndex(1000000)
+  }
+  infoWindow.open(map)
+}
+
+function createHoverCardContent(record) {
+  const details = (record.details || [])
+    .slice(0, 5)
+    .map(
+      (detail) => `
+        <div>
+          <span>${escapeHtml(detail.label)}</span>
+          <strong>${escapeHtml(detail.value)}</strong>
+        </div>
+      `,
+    )
+    .join('')
+  const address = record.address
+    ? `<p class="hover-card__address">${escapeHtml(record.address)}</p>`
+    : ''
+  const source = record.sourceUrl
+    ? `<p class="hover-card__source">${escapeHtml(record.sourceUrl)}</p>`
+    : ''
+
+  return `
+    <article class="hover-card">
+      <div class="hover-card__head" style="border-left-color: ${escapeHtml(record.color)}">
+        <span>${escapeHtml(record.datasetName)}</span>
+        <strong>${escapeHtml(record.title)}</strong>
+      </div>
+      ${address}
+      ${details ? `<div class="hover-card__details">${details}</div>` : ''}
+      ${source}
+    </article>
+  `
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function getRangeOverlayStyle(record, state, nightLightLevel = 1) {
+  if (isTrafficSignalRecord(record)) {
+    const lightLevel = Math.min(Math.max(nightLightLevel, DAY_LIGHT_VISIBILITY), 1)
+    return state === 'hover'
+      ? {
+          strokeColor: '#ffffff',
+          fillColor: '#ffffff',
+          strokeWeight: 2,
+          strokeOpacity: 0.18 + 0.82 * lightLevel,
+          fillOpacity: 0.1 + 0.82 * lightLevel,
+          zIndex: 6,
+        }
+      : {
+          strokeColor: '#ffffff',
+          fillColor: '#ffffff',
+          strokeWeight: 1,
+          strokeOpacity: 0.12 + 0.83 * lightLevel,
+          fillOpacity: 0.08 + 0.7 * lightLevel,
+          zIndex: 6,
+        }
+  }
+
   if (isSecurityLightRecord(record)) {
     return state === 'hover'
-      ? { strokeWeight: 2, strokeOpacity: 1, fillOpacity: 0.95 }
-      : { strokeWeight: 1, strokeOpacity: 0.9, fillOpacity: 0.72 }
+      ? {
+          strokeColor: record.color,
+          fillColor: record.color,
+          strokeWeight: 2,
+          strokeOpacity: 0.95,
+          fillOpacity: 0.44,
+          zIndex: 6,
+        }
+      : {
+          strokeColor: record.color,
+          fillColor: record.color,
+          strokeWeight: 1,
+          strokeOpacity: 0.88,
+          fillOpacity: 0.3,
+          zIndex: 6,
+        }
+  }
+
+  if (isChildProtectionZoneRecord(record)) {
+    return state === 'hover'
+      ? {
+          strokeColor: record.color,
+          fillColor: record.color,
+          strokeWeight: 3,
+          strokeOpacity: 0.95,
+          fillOpacity: 0.16,
+          zIndex: 6,
+        }
+      : {
+          strokeColor: record.color,
+          fillColor: record.color,
+          strokeWeight: hasChildZoneUnionShape(record) ? 3 : 2,
+          strokeOpacity: 0.9,
+          fillOpacity: hasChildZoneUnionShape(record) ? 0.06 : 0.12,
+          zIndex: 6,
+        }
+  }
+
+  if (isAccidentZoneRecord(record)) {
+    return state === 'hover'
+      ? {
+          strokeColor: record.color,
+          fillColor: record.color,
+          strokeWeight: 2,
+          strokeOpacity: 0.9,
+          fillOpacity: 0.2,
+          zIndex: 6,
+        }
+      : {
+          strokeColor: record.color,
+          fillColor: record.color,
+          strokeWeight: 1,
+          strokeOpacity: 0.82,
+          fillOpacity: 0.12,
+          zIndex: 6,
+        }
   }
 
   return state === 'hover'
-    ? { strokeWeight: 4, strokeOpacity: 0.9, fillOpacity: 0.28 }
-    : { strokeWeight: 2, strokeOpacity: 0.85, fillOpacity: 0.16 }
+    ? { strokeWeight: 4, strokeOpacity: 0.9, fillOpacity: 0.28, zIndex: 4 }
+    : { strokeWeight: 2, strokeOpacity: 0.85, fillOpacity: 0.16, zIndex: 4 }
+}
+
+function usesSafetyLightOverlay(record) {
+  return false
+}
+
+function getChildProtectionFillOverlayStyle(state) {
+  return state === 'hover'
+    ? {
+        strokeWeight: 0,
+        strokeOpacity: 0,
+        fillColor: '#16a34a',
+        fillOpacity: 0.12,
+        zIndex: 5,
+      }
+    : {
+        strokeWeight: 0,
+        strokeOpacity: 0,
+        fillColor: '#16a34a',
+        fillOpacity: 0.045,
+        zIndex: 5,
+      }
+}
+
+function getChildProtectionOutlineOverlayStyle(state) {
+  return state === 'hover'
+    ? {
+        strokeColor: '#15803d',
+        strokeWeight: 4,
+        strokeOpacity: 0.96,
+        zIndex: 7,
+      }
+    : {
+        strokeColor: '#16a34a',
+        strokeWeight: 3,
+        strokeOpacity: 0.92,
+        zIndex: 7,
+      }
+}
+
+function getSafetyLightOverlayStyle(state) {
+  return state === 'hover'
+    ? {
+        strokeColor: '#fff6a8',
+        fillColor: '#fff0a6',
+        strokeWeight: 0,
+        strokeOpacity: 0,
+        fillOpacity: 0.5,
+        zIndex: 5,
+        clickable: false,
+      }
+    : {
+        strokeColor: '#fff6b8',
+        fillColor: '#fff2b3',
+        strokeWeight: 0,
+        strokeOpacity: 0,
+        fillOpacity: 0.34,
+        zIndex: 5,
+        clickable: false,
+      }
+}
+
+function getAccidentDarkOverlayStyle(state, crimeVisualLevel = 1) {
+  const darkLevel = getCrimeVisualLevel(crimeVisualLevel)
+
+  return state === 'hover'
+    ? {
+        strokeColor: '#05070a',
+        fillColor: '#020304',
+        strokeWeight: 0,
+        strokeOpacity: 0,
+        fillOpacity: 0.36 * darkLevel,
+        zIndex: 7,
+        clickable: false,
+      }
+    : {
+        strokeColor: '#05070a',
+        fillColor: '#020304',
+        strokeWeight: 0,
+        strokeOpacity: 0,
+        fillOpacity: 0.24 * darkLevel,
+        zIndex: 7,
+        clickable: false,
+      }
+}
+
+function getCrimeVisualLevel(intensity) {
+  return Math.min(Math.max(Number(intensity) || 0, 0), 1)
 }
 
 function createMarkerImage(color) {
@@ -1763,6 +3346,82 @@ function createMarkerImage(color) {
     new window.kakao.maps.Size(42, 50),
     { offset: new window.kakao.maps.Point(21, 49) },
   )
+}
+
+function createActivityStickerMarkerImage(record, mapLevel = 7) {
+  const color = escapeSvgColor(record.color)
+  const symbol = getActivityMarkerSymbol(record)
+  const size = getActivityStickerMarkerSize(mapLevel)
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+      <filter id="shadow" x="-35%" y="-25%" width="170%" height="170%">
+        <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#111827" flood-opacity="0.22"/>
+      </filter>
+      <g filter="url(#shadow)">
+        <circle cx="18" cy="18" r="15" fill="#ffffff"/>
+        <circle cx="18" cy="18" r="11" fill="${color}" opacity="0.94"/>
+        <circle cx="18" cy="18" r="14" fill="none" stroke="#ffffff" stroke-width="3"/>
+      </g>
+      ${symbol}
+    </svg>`
+
+  return new window.kakao.maps.MarkerImage(
+    `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    new window.kakao.maps.Size(size, size),
+    { offset: new window.kakao.maps.Point(size / 2, size / 2) },
+  )
+}
+
+function getActivityStickerMarkerSize(mapLevel) {
+  if (mapLevel <= 4) return 22
+  if (mapLevel === 5) return 18
+
+  return 16
+}
+
+function isActivityStickerVisible(mapLevel) {
+  return mapLevel >= 4 && mapLevel <= 5
+}
+
+function getActivityMarkerSymbol(record) {
+  const color = escapeSvgColor(record.color)
+
+  if (record.datasetId === '15007270') {
+    return `
+      <path d="M19 9c3.8 3 5.8 6.2 5.8 9.3 0 3.7-2.5 6.2-5.8 6.2s-5.8-2.5-5.8-6.2C13.2 15.2 15.2 12 19 9Z" fill="#ffffff"/>
+      <path d="M19 15v10" stroke="#2f9e44" stroke-width="1.7" stroke-linecap="round"/>
+    `
+  }
+
+  if (record.datasetId === ACTIVITY_EXCELLENT_DATASET_ID) {
+    return `
+      <path d="m19 8.8 2.2 5 5.4.5-4.1 3.6 1.2 5.3-4.7-2.7-4.7 2.7 1.2-5.3-4.1-3.6 5.4-.5L19 8.8Z" fill="#ffffff"/>
+    `
+  }
+
+  if (record.datasetId === '15124524') {
+    return `
+      <path d="M13.5 16.6 17.6 21l7-8.2" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    `
+  }
+
+  if (record.datasetId === '15124521') {
+    return `
+      <circle cx="15" cy="20.4" r="2.1" fill="#ffffff"/>
+      <circle cx="23" cy="20.4" r="2.1" fill="#ffffff"/>
+      <path d="M14 19.8h10l-1.5-6.4h-7L14 19.8Z" fill="none" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
+    `
+  }
+
+  return `
+    <path d="M13 14.8c0-2.8 2.2-5 5-5h2c2.8 0 5 2.2 5 5v1.3c0 2.8-2.2 5-5 5h-1v3.1h-2v-3.1h-1c-2.8 0-5-2.2-5-5v-1.3Z" fill="#ffffff"/>
+    <circle cx="16" cy="15.7" r="1.3" fill="${color}"/>
+    <circle cx="22" cy="15.7" r="1.3" fill="${color}"/>
+  `
+}
+
+function escapeSvgColor(color) {
+  return /^#[0-9a-f]{3,8}$/i.test(color) ? color : '#3e63dd'
 }
 
 export default App
